@@ -1,10 +1,15 @@
+#![feature(slice_pattern)]
+#![feature(const_trait_impl)]
+extern crate core;
+
 mod consts;
 mod xml_core;
 mod utils;
 
+use core::slice::SlicePattern;
 use std::ffi::OsStr;
 use std::fmt::Error;
-use std::{fs, io};
+use std::{fs, io, ptr};
 use std::fs::File;
 use std::io::{BufRead, Cursor, Read, SeekFrom, Write};
 use std::ops::Deref;
@@ -15,11 +20,10 @@ use std::time::Instant;
 use crate::consts::*;
 use regex::Regex;
 use zip::write::FileOptions;
-use zip::ZipWriter;
+use zip::{CompressionMethod, ZipArchive, ZipWriter};
+use lazy_static::lazy_static;
 
-// fn edit_core_part_1(data: &mut CoreApp, ) {
-//
-// }
+
 
 fn is_in(item: &DirEntry, filter: &Vec<&OsStr>) -> Result<Option<String>, std::io::Error> {
 
@@ -29,7 +33,7 @@ fn is_in(item: &DirEntry, filter: &Vec<&OsStr>) -> Result<Option<String>, std::i
         Ok(None)
     }
     else if filter.contains(&extension.unwrap()) {
-        Ok(Some(item.path().to_str().unwrap().to_string()))
+        Ok(Some(item.path().to_string_lossy().into_owned()))
     }
     else {
         Ok(None)
@@ -37,14 +41,104 @@ fn is_in(item: &DirEntry, filter: &Vec<&OsStr>) -> Result<Option<String>, std::i
 
 }
 
-fn replace(data: &str) -> String {
-    let re1 = Regex::new(r"<dc:title.*<dcterms:created").unwrap();
-    let re2 = Regex::new(r"<cp:category.*</cp:coreProperties>").unwrap();
-    re2.
-        replace_all(&re1.replace_all(data, CoreXmlStr::TEXT_TEMPLATE_1), CoreXmlStr::TEXT_TEMPLATE_2)
+lazy_static! {
+    static ref RE1: Regex = Regex::new(r"<dc:title.*<dcterms:created").unwrap();
+}
+lazy_static! {
+    static ref RE2: Regex = Regex::new(r"<cp:category.*</cp:coreProperties>").unwrap();
+}
+lazy_static! {
+    static ref RE3: Regex = Regex::new(r#"<Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/custom-properties" Target="docProps/custom.xml"/>"#).unwrap();
+}
+
+
+const TARGET: &[u8] = br#"<Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/custom-properties" Target="docProps/custom.xml"/></Relationships>"#;
+const REPLACEMENT: &[u8; 16] = br#"</Relationships>"#;
+
+
+fn replace_corexml(data: &str) -> String {
+
+    RE2.
+        replace_all(&RE1.replace_all(data, CoreXmlStr::TEXT_TEMPLATE_1), CoreXmlStr::TEXT_TEMPLATE_2)
         .to_string()
 }
 
+
+fn find_rells(data: &Vec<u8>) -> Option<usize> {
+
+
+    data.windows(TARGET.len()).position(|subslice| subslice == TARGET)
+}
+
+fn remove_rells(mut data: Vec<u8>, index: usize) -> Vec<u8> {
+
+    data.truncate(index);
+    data.extend_from_slice(REPLACEMENT);
+    data
+
+}
+
+fn iterate_over_archives(docs: Vec<String>, algo: FileOptions) -> Vec<Result<(), String>> {
+    let results:Vec<Result<(), String>> = docs.iter().map(|file_name| {
+        let file = fs::File::open(file_name).unwrap();
+        let outdocxpath = format!("{file_name}_temp");
+        let outfile = File::create(&outdocxpath).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+
+        let file_result = iterate_over_inner(archive, outfile, algo);
+
+        fs::remove_file(file_name).unwrap();
+        fs::rename(outdocxpath, file_name).unwrap();
+        file_result
+
+    }).collect();
+    results
+
+}
+
+fn iterate_over_inner(mut archive: ZipArchive<File>, outfile: File, algo: FileOptions) -> Result<(), String> {
+    let mut zipout = ZipWriter::new(outfile);
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i).unwrap();
+        let outpath = match file.enclosed_name() {
+            Some(path) => path.to_owned(),
+            None => continue,
+        };
+        let mut content = Vec::with_capacity(1000);
+
+        match outpath {
+            to_edit @ "docProps/core.xml" => {
+                let num = file.by_ref().read_to_end(&mut content).expect("Unable to read file");
+                let corexml = std::str::from_utf8(&content).unwrap();
+                let replxml = replace_corexml(corexml);
+                zipout.start_file(to_edit, algo).unwrap();
+                zipout.write_all(replxml.as_bytes()).unwrap();
+            }
+            to_edit @ "_rels/.rels" => {
+                file.read_to_end(&mut content);
+                if let Some(index) = find_rells(&content) {
+                    // println!("{}", index);
+                    let rels = remove_rells(content, index);
+                    zipout.start_file(to_edit, algo).unwrap();
+                    zipout.write_all(&rels);
+                } else {
+                    zipout.start_file(to_edit, algo).unwrap();
+                    zipout.write_all(content.as_slice());
+                }
+            }
+            "docProps/custom.xml" => continue,
+            no_edit => {
+                // file.read_to_end(&mut content).unwrap();
+                zipout.start_file(no_edit, algo).unwrap();
+                // zipout.write_all(content.as_slice()).unwrap();
+                io::copy(&mut file, &mut zipout);
+            }
+        }
+
+    }
+    zipout.finish().unwrap();
+    Ok(())
+}
 fn main() -> () {
 
     let start_time = Instant::now();
@@ -63,81 +157,14 @@ fn main() -> () {
         .flatten() // Flatten the `Vec<Option<String>>` into a `Vec<String>`
         .collect();
 
-
+    // println!("{:?}", errs.into_iter());
     // println!("{:?}", &filtered);
-
-    let file = fs::File::open(filtered.get(0).unwrap()).unwrap();
-    let mut archive = zip::ZipArchive::new(file).unwrap();
-
-    let outdocxpath = "example_temp.docx";
-    let outfile = File::create(&outdocxpath).unwrap();
-    let mut zipout = ZipWriter::new(outfile);
-
-
-    for i in 0..archive.len() {
-        let mut file = archive.by_index(i).unwrap();
-        let outpath = match file.enclosed_name() {
-            Some(path) => path.to_owned(),
-            None => continue,
-        };
-        let mut content = vec![];
-        let mut replxml: String = String::new();
-        let mut replxmlstr = "";
-        if &outpath.clone().to_str().unwrap() == &"docProps/core.xml" {
-            let num = file.by_ref().read_to_end(&mut content).expect("Unable to read file");
-            let corexml = std::str::from_utf8(&content).unwrap();
-            replxml = replace(corexml);
-            replxmlstr = &replxml;
-            // println!("core's contents are: {:?} with {:?} bytes", replxmlstr, replxml.len());
-        }
-        {
-            let comment = file.comment();
-            if !comment.is_empty() {
-                // println!("File {i} comment: {comment}");
-            }
-        }
-
-        if (*file.name()).ends_with('/') {
-            // println!("File {} extracted to \"{}\"", i, outpath.display());
-            zipout.add_directory(outpath.to_str().unwrap(), Default::default()).unwrap();
-        }
-        else if &outpath.clone().to_str().unwrap() == &"docProps/core.xml"{
-            // let mut cursor = Cursor::new(replxmlstr);
-
-            zipout.start_file(outpath.to_str().unwrap(), FileOptions::default()).unwrap();
-            zipout.write_all(replxmlstr.as_bytes()).unwrap();
-        }
-
-        else {
-            println!(
-                // "File {} extracted to \"{}\" ({} bytes)",
-                // i,
-                // outpath.display(),
-                // file.size()
-            );
-            // if let Some(p) = outpath.parent() {
-            //     if !p.exists() {
-            //         zipout.add_directory(p.to_str().unwrap(), Default::default()).unwrap();
-            //     }
-            // }
-            // let mut outfile = fs::File::create(&outpath).unwrap();
-            // io::copy(&mut file, &mut outfile).unwrap();
-            file.read_to_end(&mut content).unwrap();
-            zipout.start_file(outpath.to_str().unwrap(), FileOptions::default()).unwrap();
-            zipout.write_all(content.as_slice()).unwrap();
-        };
-
+    if filtered.len() == 0 {
+        return
     }
-    zipout.finish().unwrap();
-    let elapsed_time = start_time.elapsed();
+    let deflate = FileOptions::default();
+    let x = iterate_over_archives(filtered, deflate);
 
-    // Print the elapsed time in seconds and milliseconds
-    println!("Elapsed time: {} seconds and {} milliseconds",
-             elapsed_time.as_secs(),
-             elapsed_time.subsec_millis());
-
-    fs::remove_file("example.docx").unwrap();
-    fs::rename("example_temp.docx", "example.docx").unwrap();
 }
 
 

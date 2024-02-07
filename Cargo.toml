@@ -9,6 +9,7 @@ edition = "2021"
 walkdir = "2"
 zip = "0.6"
 regex = "1.10.3"
+lazy_static = "1.4.0"
 [[bin]]
 name = "test0"
 path = "src/main.rs"
