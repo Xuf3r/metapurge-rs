@@ -3,8 +3,8 @@
 extern crate core;
 
 mod consts;
-mod xml_core;
-mod utils;
+
+mod xml_consts;
 
 use core::slice::SlicePattern;
 use std::ffi::OsStr;
@@ -101,20 +101,20 @@ fn iterate_over_inner(mut archive: ZipArchive<File>, outfile: File, algo: FileOp
     for i in 0..archive.len() {
         let mut file = archive.by_index(i).unwrap();
         let outpath = match file.enclosed_name() {
-            Some(path) => path.to_owned(),
+            Some(path) => path.to_str().unwrap().to_owned(),
             None => continue,
         };
         let mut content = Vec::with_capacity(1000);
 
-        match outpath {
-            to_edit @ "docProps/core.xml" => {
+        match outpath.as_str() {
+            to_edit @ xml_consts::CORE_XML => {
                 let num = file.by_ref().read_to_end(&mut content).expect("Unable to read file");
                 let corexml = std::str::from_utf8(&content).unwrap();
                 let replxml = replace_corexml(corexml);
                 zipout.start_file(to_edit, algo).unwrap();
                 zipout.write_all(replxml.as_bytes()).unwrap();
             }
-            to_edit @ "_rels/.rels" => {
+            to_edit @ xml_consts::RELS_XML => {
                 file.read_to_end(&mut content);
                 if let Some(index) = find_rells(&content) {
                     // println!("{}", index);
@@ -126,7 +126,7 @@ fn iterate_over_inner(mut archive: ZipArchive<File>, outfile: File, algo: FileOp
                     zipout.write_all(content.as_slice());
                 }
             }
-            "docProps/custom.xml" => continue,
+            xml_consts::CUSTOM_XML => continue,
             no_edit => {
                 // file.read_to_end(&mut content).unwrap();
                 zipout.start_file(no_edit, algo).unwrap();
