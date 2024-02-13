@@ -39,7 +39,10 @@ lazy_static! {
 const TARGET: &[u8] = br#"<Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/custom-properties" Target="docProps/custom.xml"/></Relationships>"#;
 const REPLACEMENT: &[u8; 16] = br#"</Relationships>"#;
 
-
+struct MTUnit<'a> {
+    archive: &'a ZipArchive<File>,
+    outfile:
+}
 fn is_in(item: &DirEntry, filter: &Vec<&OsStr>) -> Result<Option<String>, std::io::Error> {
 
     let binding = item;
@@ -113,7 +116,8 @@ fn iterate_over_archives(docs: Vec<String>,
 
 }
 
-fn iterate_over_inner(itx: Sender<ZipArchive<File>>, otx: Sender<ZipWriter<File>>, algo: FileOptions) -> Result<(), String> {
+fn iterate_over_inner(irx: Receiver<MTUnit>, otx: Sender<ZipWriter<File>>, algo: FileOptions) -> Result<(), String> {
+    let val = irx.recv();
     let mut zipout = ZipWriter::new(outfile);
     for i in 0..archive.len() {
         let mut file = archive.by_index(i).unwrap();
