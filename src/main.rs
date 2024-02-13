@@ -9,14 +9,13 @@ mod xml_consts;
 use core::slice::SlicePattern;
 use std::ffi::OsStr;
 use std::fmt::Error;
-use std::{fs, io, ptr, thread};
+use std::{fs, io, ptr};
 use std::fs::File;
 use std::io::{BufRead, Cursor, Read, SeekFrom, Write};
 use std::ops::Deref;
 use walkdir::{DirEntry, WalkDir};
 use std::path::Path;
 use std::str::from_utf8;
-use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::time::Instant;
 use crate::consts::*;
 use regex::Regex;
@@ -24,20 +23,6 @@ use zip::write::FileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 use lazy_static::lazy_static;
 
-
-lazy_static! {
-    static ref RE1: Regex = Regex::new(r"<dc:title.*<dcterms:created").unwrap();
-}
-lazy_static! {
-    static ref RE2: Regex = Regex::new(r"<cp:category.*</cp:coreProperties>").unwrap();
-}
-lazy_static! {
-    static ref RE3: Regex = Regex::new(r#"<Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/custom-properties" Target="docProps/custom.xml"/>"#).unwrap();
-}
-
-
-const TARGET: &[u8] = br#"<Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/custom-properties" Target="docProps/custom.xml"/></Relationships>"#;
-const REPLACEMENT: &[u8; 16] = br#"</Relationships>"#;
 
 
 fn is_in(item: &DirEntry, filter: &Vec<&OsStr>) -> Result<Option<String>, std::io::Error> {
@@ -55,6 +40,20 @@ fn is_in(item: &DirEntry, filter: &Vec<&OsStr>) -> Result<Option<String>, std::i
     }
 
 }
+
+lazy_static! {
+    static ref RE1: Regex = Regex::new(r"<dc:title.*<dcterms:created").unwrap();
+}
+lazy_static! {
+    static ref RE2: Regex = Regex::new(r"<cp:category.*</cp:coreProperties>").unwrap();
+}
+lazy_static! {
+    static ref RE3: Regex = Regex::new(r#"<Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/custom-properties" Target="docProps/custom.xml"/>"#).unwrap();
+}
+
+
+const TARGET: &[u8] = br#"<Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/custom-properties" Target="docProps/custom.xml"/></Relationships>"#;
+const REPLACEMENT: &[u8; 16] = br#"</Relationships>"#;
 
 
 fn replace_corexml(data: &str) -> String {
@@ -79,41 +78,25 @@ fn remove_rells(mut data: Vec<u8>, index: usize) -> Vec<u8> {
 
 }
 
-fn iterate_over_archives(docs: Vec<String>,
-                         algo: FileOptions,
-                         itx: Sender<ZipArchive<File>>,
-                         irx: Receiver<ZipArchive<File>>,
-                         otx: Sender<ZipWriter<File>>,
-                         orx: Receiver<ZipWriter<File>>) -> Vec<Result<(), String>> {
+fn iterate_over_archives(docs: Vec<String>, algo: FileOptions) -> Vec<Result<(), String>> {
     let results:Vec<Result<(), String>> = docs.iter().map(|file_name| {
         let file = fs::File::open(file_name).unwrap();
         let outdocxpath = format!("{file_name}_temp");
         let outfile = File::create(&outdocxpath).unwrap();
         let mut archive = zip::ZipArchive::new(file).unwrap();
-        itx.send(archive);
 
+        let file_result = iterate_over_inner(archive, outfile, algo);
 
         fs::remove_file(file_name).unwrap();
         fs::rename(outdocxpath, file_name).unwrap();
-        match orx.try_recv() {
-            Ok(message) => {
-                // Process the message
-            },
-            Err(TryRecvError::Empty) => {
-
-            },
-            Err(TryRecvError::Disconnected) => {
-                // Channel has been closed
-                println!("Channel disconnected");
-            }
-        }
+        file_result
 
     }).collect();
     results
 
 }
 
-fn iterate_over_inner(itx: Sender<ZipArchive<File>>, otx: Sender<ZipWriter<File>>, algo: FileOptions) -> Result<(), String> {
+fn iterate_over_inner(mut archive: ZipArchive<File>, outfile: File, algo: FileOptions) -> Result<(), String> {
     let mut zipout = ZipWriter::new(outfile);
     for i in 0..archive.len() {
         let mut file = archive.by_index(i).unwrap();
@@ -157,7 +140,7 @@ fn iterate_over_inner(itx: Sender<ZipArchive<File>>, otx: Sender<ZipWriter<File>
     Ok(())
 }
 fn main() -> () {
-    let deflate = FileOptions::default();
+
     let start_time = Instant::now();
 
 
@@ -179,19 +162,8 @@ fn main() -> () {
     if filtered.len() == 0 {
         return
     }
-    let (itx, irx) = channel();
-    let (otx, orx) = channel();
-
-
-    let io_thread = thread::spawn(move || {
-
-        iterate_over_archives(filtered, deflate, itx, irx, otx, orx);
-
-        });
-    let compute_thread = thread::spawn(move || {
-
-        let file_result = iterate_over_inner(itx, outfile, deflate);
-    });
+    let deflate = FileOptions::default();
+    let x = iterate_over_archives(filtered, deflate);
 
 }
 
