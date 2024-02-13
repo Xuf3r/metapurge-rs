@@ -39,9 +39,9 @@ lazy_static! {
 const TARGET: &[u8] = br#"<Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/custom-properties" Target="docProps/custom.xml"/></Relationships>"#;
 const REPLACEMENT: &[u8; 16] = br#"</Relationships>"#;
 
-struct MTUnit<'a> {
+struct MTUnit<'a,'b> {
     archive: &'a ZipArchive<File>,
-    outfile:
+    outfile: &'b File
 }
 fn is_in(item: &DirEntry, filter: &Vec<&OsStr>) -> Result<Option<String>, std::io::Error> {
 
