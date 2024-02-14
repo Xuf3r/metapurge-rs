@@ -16,6 +16,7 @@ use std::ops::Deref;
 use walkdir::{DirEntry, WalkDir};
 use std::path::Path;
 use std::str::from_utf8;
+use std::sync::{Arc, Mutex};
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::time::Instant;
 use crate::consts::*;
@@ -39,10 +40,20 @@ lazy_static! {
 const TARGET: &[u8] = br#"<Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/custom-properties" Target="docProps/custom.xml"/></Relationships>"#;
 const REPLACEMENT: &[u8; 16] = br#"</Relationships>"#;
 
-struct MTUnit<'a,'b> {
-    archive: &'a ZipArchive<File>,
-    outfile: &'b File
+struct MTUnit {
+    archive: Box<ZipArchive<File>>,
+    outfile: File
 }
+impl MTUnit {
+    fn new(file_name: &String) -> Result<Box<MTUnit>, Box<dyn std::error::Error>> {
+        let file = File::open(file_name)?;
+        let archive = Box::new(ZipArchive::new(file)?);
+        let outdocxpath = format!("{file_name}_temp");
+        let outfile = File::create(&outdocxpath).unwrap();
+        Ok(Box::new(MTUnit { archive, outfile }))
+    }
+}
+
 fn is_in(item: &DirEntry, filter: &Vec<&OsStr>) -> Result<Option<String>, std::io::Error> {
 
     let binding = item;
@@ -84,23 +95,20 @@ fn remove_rells(mut data: Vec<u8>, index: usize) -> Vec<u8> {
 
 fn iterate_over_archives(docs: Vec<String>,
                          algo: FileOptions,
-                         itx: Sender<ZipArchive<File>>,
-                         irx: Receiver<ZipArchive<File>>,
-                         otx: Sender<ZipWriter<File>>,
-                         orx: Receiver<ZipWriter<File>>) -> Vec<Result<(), String>> {
+                         itx: Sender<Box<MTUnit>>,
+                         irx: Arc<Mutex<Receiver<Box<MTUnit>>>>,
+                         otx: Arc<Mutex<Sender<Box<ZipWriter<File>>>>>,
+                         orx: Receiver<Box<ZipWriter<File>>>) -> Vec<Result<(), String>> {
+    let mut irx = irx.lock().unwrap();
+    let mut otx = otx.lock().unwrap();
     let results:Vec<Result<(), String>> = docs.iter().map(|file_name| {
-        let file = fs::File::open(file_name).unwrap();
-        let outdocxpath = format!("{file_name}_temp");
-        let outfile = File::create(&outdocxpath).unwrap();
-        let mut archive = zip::ZipArchive::new(file).unwrap();
-        itx.send(archive);
+        let mtunit = MTUnit::new(file_name).unwrap();
+        itx.send(mtunit);
 
-
-        fs::remove_file(file_name).unwrap();
-        fs::rename(outdocxpath, file_name).unwrap();
         match orx.try_recv() {
             Ok(message) => {
-                // Process the message
+                fs::remove_file(file_name).unwrap();
+                fs::rename(outdocxpath, file_name).unwrap();
             },
             Err(TryRecvError::Empty) => {
 
@@ -110,17 +118,21 @@ fn iterate_over_archives(docs: Vec<String>,
                 println!("Channel disconnected");
             }
         }
-
+    Ok(())
     }).collect();
     results
 
 }
 
-fn iterate_over_inner(irx: Receiver<MTUnit>, otx: Sender<ZipWriter<File>>, algo: FileOptions) -> Result<(), String> {
-    let val = irx.recv();
-    let mut zipout = ZipWriter::new(outfile);
-    for i in 0..archive.len() {
-        let mut file = archive.by_index(i).unwrap();
+fn iterate_over_inner(irx: Arc<Mutex<Receiver<Box<MTUnit>>>>, otx: Arc<Mutex<Sender<Box<ZipWriter<File>>>>>, algo: FileOptions) -> Result<(), String> {
+    let mut irx = irx.lock().unwrap();
+    let mut otx = otx.lock().unwrap();
+    let mut val = irx.recv().unwrap();
+
+    let mut zipout_heap = Box::new(ZipWriter::new(val.outfile));
+    let mut zipout = &mut *zipout_heap;
+    for i in 0..val.archive.len() {
+        let mut file = val.archive.by_index(i).unwrap();
         let outpath = match file.enclosed_name() {
             Some(path) => path.to_str().unwrap().to_owned(),
             None => continue,
@@ -157,6 +169,7 @@ fn iterate_over_inner(irx: Receiver<MTUnit>, otx: Sender<ZipWriter<File>>, algo:
         }
 
     }
+    otx.send(zipout_heap);
     zipout.finish().unwrap();
     Ok(())
 }
@@ -186,15 +199,23 @@ fn main() -> () {
     let (itx, irx) = channel();
     let (otx, orx) = channel();
 
+    let irx = Arc::new(Mutex::new(irx));
+    let otx = Arc::new(Mutex::new(otx));
+
+    // Clone the Arc for each thread
+    let irx_clone = Arc::clone(&irx);
+    let otx_clone = Arc::clone(&otx);
+
 
     let io_thread = thread::spawn(move || {
+
 
         iterate_over_archives(filtered, deflate, itx, irx, otx, orx);
 
         });
     let compute_thread = thread::spawn(move || {
 
-        let file_result = iterate_over_inner(itx, outfile, deflate);
+        let file_result = iterate_over_inner(irx_clone, otx_clone, deflate);
     });
 
 }
