@@ -40,17 +40,74 @@ lazy_static! {
 const TARGET: &[u8] = br#"<Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/custom-properties" Target="docProps/custom.xml"/></Relationships>"#;
 const REPLACEMENT: &[u8; 16] = br#"</Relationships>"#;
 
-struct MTUnit {
+struct MTUnitIn {
     archive: Box<ZipArchive<File>>,
     outfile: File
 }
-impl MTUnit {
-    fn new(file_name: &String) -> Result<Box<MTUnit>, Box<dyn std::error::Error>> {
+impl MTUnitIn {
+    fn new(file_name: &String) -> Result<Box<MTUnitIn>, Box<dyn std::error::Error>> {
         let file = File::open(file_name)?;
         let archive = Box::new(ZipArchive::new(file)?);
         let outdocxpath = format!("{file_name}_temp");
         let outfile = File::create(&outdocxpath).unwrap();
-        Ok(Box::new(MTUnit { archive, outfile }))
+        Ok(Box::new(MTUnitIn { archive, outfile }))
+    }
+}
+
+struct MTUnitOut {
+    archive: Box<ZipArchive<File>>,
+    outfile: File
+}
+impl MTUnitOut {
+    fn new(mut mtunit: Box<MTUnitIn>,
+           algo: FileOptions,
+           irx:Arc<Mutex<Receiver<Box<MTUnitIn>>>>)
+        -> Result<Box<MTUnitOut>, Box<dyn std::error::Error>> {
+        let mtunit_ptr = *mtunit;
+        let mut zipout_heap = Box::new(ZipWriter::new(mtunit_ptr.outfile));
+        let mut zipout = &mut *zipout_heap;
+
+        for i in 0..mtunit_ptr.archive.len() {
+            let mut file = *mtunit.archive.by_index(i).unwrap();
+            let outpath = match file.enclosed_name() {
+                Some(path) => path.to_str().unwrap().to_owned(),
+                None => continue,
+            };
+            let mut content = Vec::with_capacity(1000);
+
+            match outpath.as_str() {
+                to_edit @ xml_consts::CORE_XML => {
+                    let num = file.by_ref().read_to_end(&mut content).expect("Unable to read file");
+                    let corexml = std::str::from_utf8(&content).unwrap();
+                    let replxml = replace_corexml(corexml);
+                    zipout.start_file(to_edit, algo).unwrap();
+                    zipout.write_all(replxml.as_bytes()).unwrap();
+                }
+                to_edit @ xml_consts::RELS_XML => {
+                    file.read_to_end(&mut content);
+                    if let Some(index) = find_rells(&content) {
+                        // println!("{}", index);
+                        let rels = remove_rells(content, index);
+                        zipout.start_file(to_edit, algo).unwrap();
+                        zipout.write_all(&rels);
+                    } else {
+                        zipout.start_file(to_edit, algo).unwrap();
+                        zipout.write_all(content.as_slice());
+                    }
+                }
+                xml_consts::CUSTOM_XML => continue,
+                no_edit => {
+                    // file.read_to_end(&mut content).unwrap();
+                    zipout.start_file(no_edit, algo).unwrap();
+                    // zipout.write_all(content.as_slice()).unwrap();
+                    io::copy(&mut file, &mut zipout);
+                }
+            }
+
+        }
+        Ok(Box::new(MTUnitOut::default()))
+
+
     }
 }
 
@@ -85,7 +142,7 @@ fn find_rells(data: &Vec<u8>) -> Option<usize> {
     data.windows(TARGET.len()).position(|subslice| subslice == TARGET)
 }
 
-fn remove_rells(mut data: Vec<u8>, index: usize) -> Vec<u8> {
+fn remove_rells(data: Vec<u8>, index: usize) -> Vec<u8> {
 
     data.truncate(index);
     data.extend_from_slice(REPLACEMENT);
@@ -95,18 +152,20 @@ fn remove_rells(mut data: Vec<u8>, index: usize) -> Vec<u8> {
 
 fn iterate_over_archives(docs: Vec<String>,
                          algo: FileOptions,
-                         itx: Sender<Box<MTUnit>>,
-                         irx: Arc<Mutex<Receiver<Box<MTUnit>>>>,
+                         itx: Sender<Box<MTUnitIn>>,
+                         irx: Arc<Mutex<Receiver<Box<MTUnitIn>>>>,
                          otx: Arc<Mutex<Sender<Box<ZipWriter<File>>>>>,
-                         orx: Receiver<Box<ZipWriter<File>>>) -> Vec<Result<(), String>> {
+                         orx: Receiver<Box<ZipWriter<File>>>)
+    -> Vec<Result<(), String>> {
     let mut irx = irx.lock().unwrap();
     let mut otx = otx.lock().unwrap();
     let results:Vec<Result<(), String>> = docs.iter().map(|file_name| {
-        let mtunit = MTUnit::new(file_name).unwrap();
-        itx.send(mtunit);
+        let MTUnitIn = MTUnitIn::new(file_name).unwrap();
+        itx.send(MTUnitIn);
 
         match orx.try_recv() {
-            Ok(message) => {
+            Ok(mut message) => {
+                *message.finish();
                 fs::remove_file(file_name).unwrap();
                 fs::rename(outdocxpath, file_name).unwrap();
             },
@@ -124,15 +183,10 @@ fn iterate_over_archives(docs: Vec<String>,
 
 }
 
-fn iterate_over_inner(irx: Arc<Mutex<Receiver<Box<MTUnit>>>>, otx: Arc<Mutex<Sender<Box<ZipWriter<File>>>>>, algo: FileOptions) -> Result<(), String> {
-    let mut irx = irx.lock().unwrap();
-    let mut otx = otx.lock().unwrap();
-    let mut val = irx.recv().unwrap();
+fn iterate_over_inner(mut zip_data: Box<MTUnitOut>, algo: FileOptions) -> Result<(), String> {
 
-    let mut zipout_heap = Box::new(ZipWriter::new(val.outfile));
-    let mut zipout = &mut *zipout_heap;
-    for i in 0..val.archive.len() {
-        let mut file = val.archive.by_index(i).unwrap();
+    for i in 0..zip_data.archive.len() {
+        let mut file = zip_data.archive.by_index(i).unwrap();
         let outpath = match file.enclosed_name() {
             Some(path) => path.to_str().unwrap().to_owned(),
             None => continue,
@@ -216,6 +270,7 @@ fn main() -> () {
     let compute_thread = thread::spawn(move || {
 
         let file_result = iterate_over_inner(irx_clone, otx_clone, deflate);
+        otx.send(file_result.unwrap())
     });
 
 }
