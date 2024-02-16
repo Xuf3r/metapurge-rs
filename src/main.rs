@@ -42,70 +42,74 @@ const REPLACEMENT: &[u8; 16] = br#"</Relationships>"#;
 
 struct MTUnitIn {
     archive: Box<ZipArchive<File>>,
-    outfile: File
+    outfile: File,
+    outfilepath: PathBuf
+
 }
 impl MTUnitIn {
     fn new(file_name: &String) -> Result<Box<MTUnitIn>, Box<dyn std::error::Error>> {
         let file = File::open(file_name)?;
         let archive = Box::new(ZipArchive::new(file)?);
         let outdocxpath = format!("{file_name}_temp");
+        let outdocxpath_2 = outdocxpath.clone();
         let outfile = File::create(&outdocxpath).unwrap();
-        Ok(Box::new(MTUnitIn { archive, outfile }))
+        Ok(Box::new(MTUnitIn { archive, outfile, outfilepath: Path::new(&outdocxpath_2)}))
     }
 }
 
 struct MTUnitOut {
-    archive: Box<ZipArchive<File>>,
-    outfile: File
+    archive: Box<ZipWriter<File>>,
+    outfile: File,
+    outfilepath: Path
 }
 impl MTUnitOut {
     fn new(mut mtunit: Box<MTUnitIn>,
-           algo: FileOptions,
-           irx:Arc<Mutex<Receiver<Box<MTUnitIn>>>>)
+           algo: FileOptions)
         -> Result<Box<MTUnitOut>, Box<dyn std::error::Error>> {
-        let mtunit_ptr = *mtunit;
-        let mut zipout_heap = Box::new(ZipWriter::new(mtunit_ptr.outfile));
+        let outfile = mtunit.outfile;
+        let mut zipout_heap = Box::new(ZipWriter::new(outfile));
         let mut zipout = &mut *zipout_heap;
 
-        for i in 0..mtunit_ptr.archive.len() {
-            let mut file = *mtunit.archive.by_index(i).unwrap();
+        for i in 0..mtunit.archive.len() {
+            let mut file = mtunit.archive.by_index(i)?;
             let outpath = match file.enclosed_name() {
-                Some(path) => path.to_str().unwrap().to_owned(),
+                Some(path) => path.to_str().unwrap().to_owned(), //we unwrap because there's no possible way for path to be None. If it's none we're better off panicking.
                 None => continue,
             };
             let mut content = Vec::with_capacity(1000);
 
             match outpath.as_str() {
                 to_edit @ xml_consts::CORE_XML => {
-                    let num = file.by_ref().read_to_end(&mut content).expect("Unable to read file");
-                    let corexml = std::str::from_utf8(&content).unwrap();
+                    let read_result = file.by_ref().read_to_end(&mut content)?;
+                    let corexml = std::str::from_utf8(&content)?;
                     let replxml = replace_corexml(corexml);
-                    zipout.start_file(to_edit, algo).unwrap();
-                    zipout.write_all(replxml.as_bytes()).unwrap();
+                    zipout.start_file(to_edit, algo)?;
+                    zipout.write_all(replxml.as_bytes())?;
                 }
                 to_edit @ xml_consts::RELS_XML => {
                     file.read_to_end(&mut content);
                     if let Some(index) = find_rells(&content) {
                         // println!("{}", index);
                         let rels = remove_rells(content, index);
-                        zipout.start_file(to_edit, algo).unwrap();
+                        zipout.start_file(to_edit, algo)?;
                         zipout.write_all(&rels);
                     } else {
-                        zipout.start_file(to_edit, algo).unwrap();
+                        zipout.start_file(to_edit, algo)?;
                         zipout.write_all(content.as_slice());
                     }
                 }
                 xml_consts::CUSTOM_XML => continue,
                 no_edit => {
                     // file.read_to_end(&mut content).unwrap();
-                    zipout.start_file(no_edit, algo).unwrap();
+                    zipout.start_file(no_edit, algo)?;
                     // zipout.write_all(content.as_slice()).unwrap();
                     io::copy(&mut file, &mut zipout);
                 }
             }
 
         }
-        Ok(Box::new(MTUnitOut::default()))
+        let outfilepath = mtunit.outfilepath.to_path();
+        Ok(Box::new(MTUnitOut{archive: zipout_heap, outfile: outfile, outfilepath:  }))
 
 
     }
@@ -142,7 +146,7 @@ fn find_rells(data: &Vec<u8>) -> Option<usize> {
     data.windows(TARGET.len()).position(|subslice| subslice == TARGET)
 }
 
-fn remove_rells(data: Vec<u8>, index: usize) -> Vec<u8> {
+fn remove_rells(mut data: Vec<u8>, index: usize) -> Vec<u8> {
 
     data.truncate(index);
     data.extend_from_slice(REPLACEMENT);
@@ -153,21 +157,18 @@ fn remove_rells(data: Vec<u8>, index: usize) -> Vec<u8> {
 fn iterate_over_archives(docs: Vec<String>,
                          algo: FileOptions,
                          itx: Sender<Box<MTUnitIn>>,
-                         irx: Arc<Mutex<Receiver<Box<MTUnitIn>>>>,
-                         otx: Arc<Mutex<Sender<Box<ZipWriter<File>>>>>,
-                         orx: Receiver<Box<ZipWriter<File>>>)
+                         orx: Receiver<Box<MTUnitOut>>)
     -> Vec<Result<(), String>> {
-    let mut irx = irx.lock().unwrap();
-    let mut otx = otx.lock().unwrap();
     let results:Vec<Result<(), String>> = docs.iter().map(|file_name| {
         let MTUnitIn = MTUnitIn::new(file_name).unwrap();
         itx.send(MTUnitIn);
 
         match orx.try_recv() {
             Ok(mut message) => {
-                *message.finish();
+                let outpath = message.outfile.path().to_path_buf(); ;
+                message.archive.finish();
                 fs::remove_file(file_name).unwrap();
-                fs::rename(outdocxpath, file_name).unwrap();
+                fs::rename(outpath, file_name).unwrap();
             },
             Err(TryRecvError::Empty) => {
 
@@ -183,50 +184,50 @@ fn iterate_over_archives(docs: Vec<String>,
 
 }
 
-fn iterate_over_inner(mut zip_data: Box<MTUnitOut>, algo: FileOptions) -> Result<(), String> {
-
-    for i in 0..zip_data.archive.len() {
-        let mut file = zip_data.archive.by_index(i).unwrap();
-        let outpath = match file.enclosed_name() {
-            Some(path) => path.to_str().unwrap().to_owned(),
-            None => continue,
-        };
-        let mut content = Vec::with_capacity(1000);
-
-        match outpath.as_str() {
-            to_edit @ xml_consts::CORE_XML => {
-                let num = file.by_ref().read_to_end(&mut content).expect("Unable to read file");
-                let corexml = std::str::from_utf8(&content).unwrap();
-                let replxml = replace_corexml(corexml);
-                zipout.start_file(to_edit, algo).unwrap();
-                zipout.write_all(replxml.as_bytes()).unwrap();
-            }
-            to_edit @ xml_consts::RELS_XML => {
-                file.read_to_end(&mut content);
-                if let Some(index) = find_rells(&content) {
-                    // println!("{}", index);
-                    let rels = remove_rells(content, index);
-                    zipout.start_file(to_edit, algo).unwrap();
-                    zipout.write_all(&rels);
-                } else {
-                    zipout.start_file(to_edit, algo).unwrap();
-                    zipout.write_all(content.as_slice());
-                }
-            }
-            xml_consts::CUSTOM_XML => continue,
-            no_edit => {
-                // file.read_to_end(&mut content).unwrap();
-                zipout.start_file(no_edit, algo).unwrap();
-                // zipout.write_all(content.as_slice()).unwrap();
-                io::copy(&mut file, &mut zipout);
-            }
-        }
-
-    }
-    otx.send(zipout_heap);
-    zipout.finish().unwrap();
-    Ok(())
-}
+// fn iterate_over_inner(mut zip_data: Box<MTUnitIn>, algo: FileOptions) -> Result<(), String> {
+//
+//     for i in 0..zip_data.archive.len() {
+//         let mut file = zip_data.archive.by_index(i).unwrap();
+//         let outpath = match file.enclosed_name() {
+//             Some(path) => path.to_str().unwrap().to_owned(),
+//             None => continue,
+//         };
+//         let mut content = Vec::with_capacity(1000);
+//
+//         match outpath.as_str() {
+//             to_edit @ xml_consts::CORE_XML => {
+//                 let num = file.by_ref().read_to_end(&mut content).expect("Unable to read file");
+//                 let corexml = std::str::from_utf8(&content).unwrap();
+//                 let replxml = replace_corexml(corexml);
+//                 zipout.start_file(to_edit, algo).unwrap();
+//                 zipout.write_all(replxml.as_bytes()).unwrap();
+//             }
+//             to_edit @ xml_consts::RELS_XML => {
+//                 file.read_to_end(&mut content);
+//                 if let Some(index) = find_rells(&content) {
+//                     // println!("{}", index);
+//                     let rels = remove_rells(content, index);
+//                     zipout.start_file(to_edit, algo).unwrap();
+//                     zipout.write_all(&rels);
+//                 } else {
+//                     zipout.start_file(to_edit, algo).unwrap();
+//                     zipout.write_all(content.as_slice());
+//                 }
+//             }
+//             xml_consts::CUSTOM_XML => continue,
+//             no_edit => {
+//                 // file.read_to_end(&mut content).unwrap();
+//                 zipout.start_file(no_edit, algo).unwrap();
+//                 // zipout.write_all(content.as_slice()).unwrap();
+//                 io::copy(&mut file, &mut zipout);
+//             }
+//         }
+//
+//     }
+//     otx.send(zipout_heap);
+//     zipout.finish().unwrap();
+//     Ok(())
+// }
 fn main() -> () {
     let deflate = FileOptions::default();
     let start_time = Instant::now();
@@ -248,8 +249,13 @@ fn main() -> () {
     // println!("{:?}", errs.into_iter());
     // println!("{:?}", &filtered);
     if filtered.len() == 0 {
-        return
+        return;
     }
+
+    let input_len_for_io = filtered.len();
+    let input_len_for_compute = input_len_for_io.clone();
+
+
     let (itx, irx) = channel();
     let (otx, orx) = channel();
 
@@ -264,13 +270,18 @@ fn main() -> () {
     let io_thread = thread::spawn(move || {
 
 
-        iterate_over_archives(filtered, deflate, itx, irx, otx, orx);
+        iterate_over_archives(filtered, deflate, itx, orx);
 
         });
     let compute_thread = thread::spawn(move || {
+        let mut counter = 0;
+        while counter <= input_len_for_io {
+            let ram_archive = irx.lock().unwrap().recv().unwrap();
+            let out_archive = MTUnitOut::new(ram_archive, deflate);
+            otx.send(out_archive);
+            counter += 1;
+        }
 
-        let file_result = iterate_over_inner(irx_clone, otx_clone, deflate);
-        otx.send(file_result.unwrap())
     });
 
 }
