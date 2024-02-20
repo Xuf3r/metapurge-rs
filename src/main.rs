@@ -58,7 +58,7 @@ impl MTUnitIn {
         Ok(Box::new(MTUnitIn {
             archive,
             outfile,
-            oldfilepath: outdocxpath.clone(),
+            oldfilepath: file_name.clone(),
             outfilepath: PathBuf::from(outdocxpath_2)}))
     }
 }
@@ -129,6 +129,11 @@ enum OutMessage {
     Data(Box<MTUnitOut>),
     ComputeEnd
 }
+
+enum InMessage {
+    Data(Box<MTUnitIn>),
+    ComputeEnd,
+}
 fn is_in(item: &DirEntry, filter: &Vec<&OsStr>) -> Result<Option<String>, std::io::Error> {
 
     let binding = item;
@@ -171,12 +176,12 @@ fn remove_rells(mut data: Vec<u8>, index: usize) -> Vec<u8> {
 
 fn iterate_over_archives(docs: Vec<String>,
                          algo: FileOptions,
-                         itx: Sender<Box<MTUnitIn>>,
+                         itx: Sender<InMessage>,
                          orx: Receiver<OutMessage>) {
     for file_name in docs
     {
         let MTUnitIn = MTUnitIn::new(&file_name).unwrap();
-        itx.send(MTUnitIn);
+        itx.send(InMessage::Data(MTUnitIn));
 
         match orx.try_recv() {
             Ok(mut message) => {
@@ -193,25 +198,37 @@ fn iterate_over_archives(docs: Vec<String>,
                     }
                 }
             },
-            Err(TryRecvError::Empty) => {
-                continue
-            },
-            Err(TryRecvError::Disconnected) => {
-                // Channel has been closed
-                println!("Channel disconnected");
-            }
+            Err(TryRecvError::Empty) => continue,
+            Err(TryRecvError::Disconnected) => break,
         }
     };
+    itx.send(InMessage::ComputeEnd);
+    while let Ok(message) = orx.recv() {
+        match message {
+            OutMessage::Data(mut data) => {
+                let outpath = data.outfilepath;
+                // println!("{:?}", outpath);
+                let oldpath = data.oldfilepath;
+                // println!("{:?}", oldpath);
+                data.archive.finish();
+                fs::remove_file(&oldpath).unwrap();
+                fs::rename(&outpath, &oldpath).unwrap();
+            },
+            OutMessage::ComputeEnd => {
+                return
+            }
+        }
+    }
 }
 
 fn main() -> () {
     let deflate = FileOptions::default();
-    let start_time = Instant::now();
+    // let start_time = Instant::now();
 
 
-    let filter_vec = vec![OsStr::new("docx")];
+    let filter_vec = vec![OsStr::new("docx"),OsStr::new("xlsx")];
 
-    let (oks, errs): (Vec<_>, Vec<_>) = WalkDir::new("C:\\Users\\stp\\ferrprojs\\test0")
+    let (oks, errs): (Vec<_>, Vec<_>) = WalkDir::new("C:\\Users\\stp\\ferrprojs\\")
         .into_iter()
         .filter_map(Result::ok)
         .map(|path| is_in(&path, &filter_vec))
@@ -248,7 +265,19 @@ fn main() -> () {
     let compute_thread = thread::spawn(move || {
         let mut counter = 0;
         while counter <= input_len_for_io {
-            let ram_archive = irx.recv().unwrap();
+            let ram_archive = match irx.recv() {
+                Ok(message) => {
+                    match message {
+                        InMessage::Data(data) => data,
+                        InMessage::ComputeEnd => {
+                            otx.send(OutMessage::ComputeEnd);
+                            break
+                        },
+                    }
+                },
+                Err(error) => {println!("{:?}", error); panic!()},
+            };
+
             let out_archive = MTUnitOut::new(ram_archive, deflate);
             let out_archive = match out_archive {
                 Ok(content) =>{content},
