@@ -228,7 +228,7 @@ fn main() -> () {
 
     let filter_vec = vec![OsStr::new("docx"),OsStr::new("xlsx")];
 
-    let (oks, errs): (Vec<_>, Vec<_>) = WalkDir::new("C:\\Users\\stp\\ferrprojs\\")
+    let (oks, errs): (Vec<_>, Vec<_>) = WalkDir::new("C:\\Users\\stp\\ferrprojs\\test0")
         .into_iter()
         .filter_map(Result::ok)
         .map(|path| is_in(&path, &filter_vec))
