@@ -177,6 +177,8 @@ fn remove_rells(mut data: Vec<u8>, index: usize) -> Vec<u8> {
 fn iterate_over_archives(docs: Vec<String>,
                          algo: FileOptions,
                          itx: Sender<InMessage>,
+                         irx: Arc<Mutex<Receiver<InMessage>>>,
+                         otx: Sender<OutMessage>,
                          orx: Receiver<OutMessage>) {
     for file_name in docs
     {
@@ -203,22 +205,53 @@ fn iterate_over_archives(docs: Vec<String>,
         }
     };
     itx.send(InMessage::ComputeEnd);
-    while let Ok(message) = orx.recv() {
-        match message {
-            OutMessage::Data(mut data) => {
-                let outpath = data.outfilepath;
-                // println!("{:?}", outpath);
-                let oldpath = data.oldfilepath;
-                // println!("{:?}", oldpath);
-                data.archive.finish();
-                fs::remove_file(&oldpath).unwrap();
-                fs::rename(&outpath, &oldpath).unwrap();
-            },
-            OutMessage::ComputeEnd => {
-                return
+
+
+
+
+    loop {
+            let mut irx_locked = irx.lock().unwrap();
+            let ram_archive = match irx_locked.try_recv() {
+                Ok(message) => {
+                    match message {
+                        InMessage::Data(data) => data,
+                        InMessage::ComputeEnd => {
+                            otx.send(OutMessage::ComputeEnd);
+                            break
+
+                        },
+                    }
+                },
+                Err(error) => {println!("{:?}", error); panic!()},
+            };
+
+            let out_archive = MTUnitOut::new(ram_archive, deflate);
+            let out_archive = match out_archive {
+                Ok(content) =>{content},
+                Err(err) => {println!("{:?}",err); panic!()}
+            };
+            otx.send(OutMessage::Data(out_archive));
+
+
+
+        while let Ok(message) = orx.recv() {
+            match message {
+                OutMessage::Data(mut data) => {
+                    let outpath = data.outfilepath;
+                    // println!("{:?}", outpath);
+                    let oldpath = data.oldfilepath;
+                    // println!("{:?}", oldpath);
+                    data.archive.finish();
+                    fs::remove_file(&oldpath).unwrap();
+                    fs::rename(&outpath, &oldpath).unwrap();
+                },
+                OutMessage::ComputeEnd => {
+                    return
+                }
             }
         }
     }
+
 }
 
 fn main() -> () {
@@ -251,13 +284,14 @@ fn main() -> () {
 
     let (itx, irx) = channel();
     let (otx, orx) = channel();
-
+    let otx_io = otx.clone();
+    let irx_arc = Arc::new(Mutex::new(irx));
 
 
     let io_thread = thread::spawn(move || {
 
 
-        iterate_over_archives(filtered, deflate, itx, orx);
+        iterate_over_archives(filtered, deflate, itx, Arc::clone(&irx_arc), otx_io, orx);
 
         });
 
@@ -265,7 +299,8 @@ fn main() -> () {
     let compute_thread = thread::spawn(move || {
         let mut counter = 0;
         while counter <= input_len_for_io {
-            let ram_archive = match irx.recv() {
+            let mut irx_locked = irx_arc.lock().unwrap();
+            let ram_archive = match irx_locked.recv() {
                 Ok(message) => {
                     match message {
                         InMessage::Data(data) => data,
