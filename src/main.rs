@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::str::from_utf8;
 use std::sync::{Arc, Mutex};
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use crate::consts::*;
 use regex::Regex;
 use zip::write::FileOptions;
@@ -182,59 +182,64 @@ fn iterate_over_archives(docs: Vec<String>,
                          orx: Receiver<OutMessage>) {
     for file_name in docs
     {
-        let MTUnitIn = MTUnitIn::new(&file_name).unwrap();
-        itx.send(InMessage::Data(MTUnitIn));
-
-        match orx.try_recv() {
-            Ok(mut message) => {
-                match message {
-                    OutMessage::Data(mut data) => {
-                        let outpath = data.outfilepath;
-                        let oldpath = data.oldfilepath;
-                        data.archive.finish();
-                        fs::remove_file(&oldpath).unwrap();
-                        fs::rename(&outpath, &oldpath).unwrap();
-                    },
-                    OutMessage::ComputeEnd => {
-                        return
-                    }
-                }
-            },
-            Err(TryRecvError::Empty) => continue,
-            Err(TryRecvError::Disconnected) => break,
+        if let Ok(MTUnitIn) = MTUnitIn::new(&file_name) {
+            itx.send(InMessage::Data(MTUnitIn));
         }
+        else {
+            println!("what happened during MTUnitIn creation?");
+        };
     };
+    itx.send(InMessage::ComputeEnd);
     itx.send(InMessage::ComputeEnd);
 
 
 
-
     loop {
-            let mut irx_locked = irx.lock().unwrap();
-            let ram_archive = match irx_locked.try_recv() {
-                Ok(message) => {
-                    match message {
-                        InMessage::Data(data) => data,
-                        InMessage::ComputeEnd => {
-                            otx.send(OutMessage::ComputeEnd);
-                            break
+        let mut irx_locked = match irx.lock() {
+            Ok(lock) => lock,
+            Err(error) => {
+                println!("Failed to acquire lock: {:?}", error);
+                panic!()
+            }
+        };
 
-                        },
-                    }
-                },
-                Err(error) => {println!("{:?}", error); panic!()},
-            };
+        //checked the lock
 
-            let out_archive = MTUnitOut::new(ram_archive, deflate);
-            let out_archive = match out_archive {
-                Ok(content) =>{content},
-                Err(err) => {println!("{:?}",err); panic!()}
-            };
-            otx.send(OutMessage::Data(out_archive));
+        match irx_locked.try_recv() {
+            Ok(message) => {
+                match message {
+                    InMessage::Data(data) => {
+                        drop(irx_locked);
+                        let out_archive = match MTUnitOut::new(data, algo) {
+                            Ok(content) => content,
+                            Err(err) => {
+                                println!("{:?}", err);
+                                panic!()
+                            },
+                        };
+                        otx.send(OutMessage::Data(out_archive));
+                    },
+                    InMessage::ComputeEnd => {
+                        // otx.send(OutMessage::ComputeEnd).unwrap_or_else(|err| {
+                        //     println!("Failed to send message: {:?}", err);
+                        //
+                        // });
+                        drop(irx_locked);
+                        break
+                    },
+                }
+            },
+            Err(TryRecvError::Empty) => {
+                // println!("huh? why empty in the i/o-consumer thread?"); // No message available yet, exit the reception
+            },
+            Err(TryRecvError::Disconnected) => {
+                // println!("huh? why disconnected in the i/o-consumer thread?");// No more messages available, only exit the reception since we might have writes down the line
+            },
+        };
 
 
 
-        while let Ok(message) = orx.recv() {
+        if let Ok(message) = orx.try_recv() {
             match message {
                 OutMessage::Data(mut data) => {
                     let outpath = data.outfilepath;
@@ -244,13 +249,32 @@ fn iterate_over_archives(docs: Vec<String>,
                     data.archive.finish();
                     fs::remove_file(&oldpath).unwrap();
                     fs::rename(&outpath, &oldpath).unwrap();
-                },
+                }
                 OutMessage::ComputeEnd => {
-                    return
+                    break
                 }
             }
         }
-    }
+    };
+
+    loop {
+        if let Ok(message) = orx.recv() {
+            match message {
+                OutMessage::Data(mut data) => {
+                    let outpath = data.outfilepath;
+                    // println!("{:?}", outpath);
+                    let oldpath = data.oldfilepath;
+                    // println!("{:?}", oldpath);
+                    data.archive.finish();
+                    fs::remove_file(&oldpath).unwrap();
+                    fs::rename(&outpath, &oldpath).unwrap();
+                }
+                OutMessage::ComputeEnd => {
+                    break
+                }
+            }
+        }
+    };
 
 }
 
@@ -287,39 +311,47 @@ fn main() -> () {
     let otx_io = otx.clone();
     let irx_arc = Arc::new(Mutex::new(irx));
 
+    let irx_arc_c = Arc::clone(&irx_arc);
+    let irx_arc_io = Arc::clone(&irx_arc);
+
 
     let io_thread = thread::spawn(move || {
 
 
-        iterate_over_archives(filtered, deflate, itx, Arc::clone(&irx_arc), otx_io, orx);
+        iterate_over_archives(filtered, deflate, itx, irx_arc_io, otx_io, orx);
 
         });
 
 
     let compute_thread = thread::spawn(move || {
-        let mut counter = 0;
-        while counter <= input_len_for_io {
-            let mut irx_locked = irx_arc.lock().unwrap();
-            let ram_archive = match irx_locked.recv() {
+        thread::sleep(Duration::new(0, 50*100));
+        loop {
+            let mut irx_locked = irx_arc_c.lock().unwrap();
+            match irx_locked.recv() {
                 Ok(message) => {
                     match message {
-                        InMessage::Data(data) => data,
+                        InMessage::Data(data) => {
+                            drop(irx_locked);
+                            if let Ok(edited_data) = MTUnitOut::new(data, deflate) {
+                                otx.send(OutMessage::Data(edited_data));
+                            } else {
+                                panic!("for some reason creating MTUnitOut in the compute thread failed!");
+                            }
+                        },
                         InMessage::ComputeEnd => {
+                            thread::sleep(Duration::new(0, 50*100));
                             otx.send(OutMessage::ComputeEnd);
+                            drop(irx_locked);
                             break
                         },
                     }
                 },
-                Err(error) => {println!("{:?}", error); panic!()},
+                Err(_) => {
+                    println!("in compute thread - probably itx closed");
+                    break// No message available yet, exit the reception
+                },
             };
 
-            let out_archive = MTUnitOut::new(ram_archive, deflate);
-            let out_archive = match out_archive {
-                Ok(content) =>{content},
-                Err(err) => {println!("{:?}",err); panic!()}
-            };
-            otx.send(OutMessage::Data(out_archive));
-            counter += 1;
         }
 
     });
