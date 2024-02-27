@@ -16,7 +16,7 @@ use std::ops::Deref;
 use walkdir::{DirEntry, WalkDir};
 use std::path::{Path, PathBuf};
 use std::str::from_utf8;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Condvar};
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 use crate::consts::*;
@@ -179,7 +179,12 @@ fn iterate_over_archives(docs: Vec<String>,
                          itx: Sender<InMessage>,
                          irx: Arc<Mutex<Receiver<InMessage>>>,
                          otx: Sender<OutMessage>,
-                         orx: Receiver<OutMessage>) {
+                         orx: Receiver<OutMessage>,
+                         lock: &Mutex<bool>,
+                         cvar: &Condvar) {
+
+    let mut started = lock.lock().unwrap();
+
     for file_name in docs
     {
         if let Ok(MTUnitIn) = MTUnitIn::new(&file_name) {
@@ -230,9 +235,11 @@ fn iterate_over_archives(docs: Vec<String>,
                 }
             },
             Err(TryRecvError::Empty) => {
+                break
                 // println!("huh? why empty in the i/o-consumer thread?"); // No message available yet, exit the reception
             },
             Err(TryRecvError::Disconnected) => {
+                break
                 // println!("huh? why disconnected in the i/o-consumer thread?");// No more messages available, only exit the reception since we might have writes down the line
             },
         };
@@ -254,8 +261,21 @@ fn iterate_over_archives(docs: Vec<String>,
                     break
                 }
             }
+
+        }else {
+            // If try_recv() returns an Err, skip the rest of the loop iteration
+            continue;
         }
     };
+
+    // allowing the compute thread to send the finish message
+
+    *started = true; // Set the condition to true
+
+    cvar.notify_one(); // Notify one waiting thread
+
+    drop(started);
+
 
     loop {
         if let Ok(message) = orx.recv() {
@@ -314,16 +334,19 @@ fn main() -> () {
     let irx_arc_c = Arc::clone(&irx_arc);
     let irx_arc_io = Arc::clone(&irx_arc);
 
+    let pair = Arc::new((Mutex::new(false), Condvar::new()));
+    let pair2 = Arc::clone(&pair);
 
     let io_thread = thread::spawn(move || {
+        let (lock, cvar) = &*pair;
 
-
-        iterate_over_archives(filtered, deflate, itx, irx_arc_io, otx_io, orx);
+        iterate_over_archives(filtered, deflate, itx, irx_arc_io, otx_io, orx, lock, cvar);
 
         });
 
 
     let compute_thread = thread::spawn(move || {
+        let (lock, cvar) = &*pair2;
         thread::sleep(Duration::new(0, 50*100));
         loop {
             let mut irx_locked = irx_arc_c.lock().unwrap();
@@ -339,16 +362,28 @@ fn main() -> () {
                             }
                         },
                         InMessage::ComputeEnd => {
-                            thread::sleep(Duration::new(0, 50*100));
-                            otx.send(OutMessage::ComputeEnd);
                             drop(irx_locked);
+                            //waiting for the signal that we last real data has been sent to the channel
+
+
+                            let mut started = lock.lock().unwrap();
+
+                            while !*started {
+                                started = cvar.wait(started).unwrap();
+                            }
+
+
+                            otx.send(OutMessage::ComputeEnd);
+                             //probably can drop earlier
+                            // since input queue is empty or drop implicitly but whatever
                             break
                         },
                     }
                 },
                 Err(_) => {
                     println!("in compute thread - probably itx closed");
-                    break// No message available yet, exit the reception
+                    break// it's not possible for the itx to not exist when compute thread is alive
+                    // this branch is supposed to be unreachable
                 },
             };
 
