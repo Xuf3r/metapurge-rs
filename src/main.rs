@@ -5,6 +5,8 @@ extern crate core;
 mod consts;
 
 mod xml_consts;
+mod pdf;
+mod load_process_write;
 
 use core::slice::SlicePattern;
 use std::ffi::OsStr;
@@ -39,6 +41,7 @@ lazy_static! {
 
 const TARGET: &[u8] = br#"<Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/custom-properties" Target="docProps/custom.xml"/></Relationships>"#;
 const REPLACEMENT: &[u8; 16] = br#"</Relationships>"#;
+
 
 struct MTUnitIn {
     archive: Box<ZipArchive<File>>,
