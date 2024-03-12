@@ -2,9 +2,9 @@
 #![feature(const_trait_impl)]
 extern crate core;
 
-mod consts;
+mod msoffice_core_xml_templates; // it doesn't seem to be used at all
 
-mod xml_consts;
+mod msoffice_file_name_consts;
 mod pdf;
 mod load_process_write;
 
@@ -21,7 +21,7 @@ use std::str::from_utf8;
 use std::sync::{Arc, Mutex, Condvar};
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
-use crate::consts::*;
+use crate::msoffice_core_xml_templates::*; // this doesn't seem to be used at all
 use regex::Regex;
 use zip::write::FileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
@@ -85,17 +85,17 @@ impl MTUnitOut {
                 Some(path) => path.to_str().unwrap().to_owned(), //we unwrap because there's no possible way for path to be None. If it's none we're better off panicking.
                 None => continue,
             };
-            let mut content = Vec::with_capacity(1000);
+            let mut content = Vec::with_capacity(1024);
 
             match outpath.as_str() {
-                to_edit @ xml_consts::CORE_XML => {
+                to_edit @ msoffice_file_name_consts::CORE_XML => {
                     let read_result = file.by_ref().read_to_end(&mut content)?;
                     let corexml = std::str::from_utf8(&content)?;
                     let replxml = replace_corexml(corexml);
                     zipout.start_file(to_edit, algo)?;
                     zipout.write_all(replxml.as_bytes())?;
                 }
-                to_edit @ xml_consts::RELS_XML => {
+                to_edit @ msoffice_file_name_consts::RELS_XML => {
                     file.read_to_end(&mut content);
                     if let Some(index) = find_rells(&content) {
                         // println!("{}", index);
@@ -107,7 +107,7 @@ impl MTUnitOut {
                         zipout.write_all(content.as_slice());
                     }
                 }
-                xml_consts::CUSTOM_XML => continue,
+                msoffice_file_name_consts::CUSTOM_XML => continue,
                 no_edit => {
                     // file.read_to_end(&mut content).unwrap();
                     zipout.start_file(no_edit, algo)?;
