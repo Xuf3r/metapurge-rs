@@ -1,9 +1,7 @@
+#![deny(clippy::unwrap_used)]
 use std::ffi::OsString;
-use std::fs::File;
-use std::io::{BufWriter, Read, Write};
-use lazy_static::lazy_static;
-use regex::Regex;
-use crate::load_process_write::*;
+
+use crate::traits::load_process_write::*;
 use std::collections::{HashSet};
 use std::fmt::{Debug, Pointer};
 
@@ -11,6 +9,7 @@ use lopdf::{Document, Object, ObjectId,};
 
 use std::str::{from_utf8, FromStr};
 use xmp_toolkit::{ToStringOptions, XmpError, XmpMeta, XmpValue};
+use crate::errors::error::PurgeErr;
 
 // /*lazy_static! {
 //     static ref PRODUCER_REGEX: Regex = Regex::new(r#"Producer(.*?)"#).unwrap();
@@ -32,7 +31,7 @@ const ELEMENTS_TO_CLEAN: [(&str, &str,XmpValue<String>); 4] = [
     ("http://ns.adobe.com/xap/1.0/mm/", "xmp:CreatorTool", XmpValue::new("".to_owned())),
 ];
 
-fn clean_xmp(mut xmp: XmpMeta) -> Result<(), XmpError>{
+fn clean_xmp(mut xmp: XmpMeta) -> Result<(), PurgeErr>{
     for (ns, name, replace) in ELEMENTS_TO_CLEAN {
         if let Some(val) = xmp.property(ns,name) {
             xmp.set_property(ns, name, &replace)?
@@ -55,7 +54,7 @@ pub(crate) struct PdfFinal {
 }
 
 impl LoadFs for PdfPath {
-    fn load(mut self) -> Result<PdfData, std::io::Error> {
+    fn load(mut self) -> Result<PdfData, PurgeErr> {
         // Open the file
         let doc = Document::load(&self.old_path)?;
         let mut temp = OsString::from(&self.old_path);
@@ -68,7 +67,7 @@ impl LoadFs for PdfPath {
 }
 
 impl Process for PdfData {
-    fn process(mut self) -> Result<PdfFinal, XmpError> {
+    fn process(mut self) -> Result<PdfFinal, PurgeErr> {
 
         let pdf_metadata_keys: HashSet<&str> = [
         "Title", "Author", "Subject", "Keywords", "Creator", "Producer", "CreationDate", "ModDate"
@@ -123,7 +122,7 @@ impl Process for PdfData {
 }
 
 impl Finalize for PdfFinal {
-    fn save(mut self) -> Result<(), std::io::Error> {
+    fn save(mut self) -> Result<(), PurgeErr> {
 
 
         self.finaldata.save(&self.paths.temp_path)?;

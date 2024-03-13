@@ -1,5 +1,5 @@
-use crate::consts::*;
-use crate::utils;
+use crate::mso_x::mso_x_core_xml_templates as templates;
+use crate::mso_x::utils;
 struct CoreXml {
     data: Vec<u8>,
 
@@ -26,10 +26,10 @@ trait MetadataChainCaller: MetadataRemove {
 impl MetadataRemove for CoreXml {
     fn before_date_data(mut self) -> Result<Self, String> where Self: Sized {
         // Implementation for before_date_data
-        let start = utils::find_pattern_index(&self.data, &CoreXmlStr::CORE_PATTERN_BEFORE_DATE);
-        let end = utils::find_pattern_index(&self.data, &CoreXmlStr::CORE_PATTERN_AFTER_DATE);
+        let start = utils::find_pattern_index(&self.data, &templates::CoreXmlStr::CORE_PATTERN_BEFORE_DATE);
+        let end = utils::find_pattern_index(&self.data, &templates::CoreXmlStr::CORE_PATTERN_AFTER_DATE);
         if let (Some(start), Some(end)) = (start, end) {
-            self.data[start..=end].copy_from_slice(&CoreXmlStr::CORE_TEMPLATE_BEFORE_DATE);
+            self.data[start..=end].copy_from_slice(&templates::CoreXmlStr::CORE_TEMPLATE_BEFORE_DATE);
             Ok(self)
         } else {
             Err("Unexpected document structure!".to_string())
