@@ -128,7 +128,7 @@ impl Finalize for PdfFinal {
         self.finaldata.save(&self.paths.temp_path)?;
         if let Err(hr) = std::fs::remove_file(&self.paths.old_path) {
             std::fs::remove_file(&self.paths.temp_path);
-            return Err(hr)
+            return Err(PurgeErr::from(hr))
         };
         std::fs::rename(&self.paths.temp_path, &self.paths.old_path)?;
         Ok(())

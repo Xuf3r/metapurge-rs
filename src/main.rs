@@ -2,7 +2,7 @@
 #![feature(const_trait_impl)]
 extern crate core;
 
-mod mso_x_core_xml_templates; // it doesn't seem to be used at all
+use mso_x::mso_x_core_xml_templates; // it doesn't seem to be used at all
 
 mod mso_x_file_name_consts;
 mod pdf;
@@ -15,6 +15,7 @@ use core::slice::SlicePattern;
 use std::ffi::OsStr;
 use std::fmt::Error;
 use std::{fs, io, ptr, thread};
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufRead, Cursor, Read, SeekFrom, Write};
 use std::ops::Deref;
@@ -29,6 +30,7 @@ use regex::Regex;
 use zip::write::FileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 use lazy_static::lazy_static;
+use crate::traits::load_process_write::LoadFs;
 
 
 lazy_static! {
@@ -46,26 +48,13 @@ const TARGET: &[u8] = br#"<Relationship Id="rId4" Type="http://schemas.openxmlfo
 const REPLACEMENT: &[u8; 16] = br#"</Relationships>"#;
 
 
-struct MTUnitIn {
-    archive: Box<ZipArchive<File>>,
-    outfile: File,
-    oldfilepath: String,
-    outfilepath: PathBuf
+struct MTUnitIn<T> {
+    data: T
 
 }
 impl MTUnitIn {
-    fn new(file_name: &String) -> Result<Box<MTUnitIn>, Box<dyn std::error::Error>> {
-        let file = File::open(file_name)?;
-        let archive = Box::new(ZipArchive::new(file)?);
-        let outdocxpath = format!("{file_name}_temp");
-        let outdocxpath_2 = outdocxpath.clone();
-        let outfile = File::create(&outdocxpath).unwrap();
+    fn new(file_name: &dyn LoadFs) -> Result<(), Box<dyn std::error::Error>> {
 
-        Ok(Box::new(MTUnitIn {
-            archive,
-            outfile,
-            oldfilepath: file_name.clone(),
-            outfilepath: PathBuf::from(outdocxpath_2)}))
     }
 }
 
@@ -310,6 +299,7 @@ fn main() -> () {
 
 
     let filter_vec = vec![OsStr::new("docx"),OsStr::new("xlsx")];
+    let filter_set: HashSet<_> = filter_vec.iter().cloned().collect();
 
     let (oks, errs): (Vec<_>, Vec<_>) = WalkDir::new("C:\\Users\\stp\\ferrprojs\\test0")
         .into_iter()
