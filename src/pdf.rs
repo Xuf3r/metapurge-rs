@@ -53,6 +53,14 @@ pub(crate) struct PdfFinal {
     paths: PdfPath
 }
 
+impl PdfPath {
+    pub(crate) fn new(path: &str) -> PdfPath {
+        PdfPath {
+            old_path: OsString::from(path),
+            temp_path: OsString::new()
+        }
+    }
+}
 impl LoadFs for PdfPath {
     fn load(mut self) -> Result<PdfData, PurgeErr> {
         // Open the file

@@ -30,8 +30,10 @@ use regex::Regex;
 use zip::write::FileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 use lazy_static::lazy_static;
+use crate::errors::error::PurgeErr;
 use crate::traits::load_process_write::LoadFs;
-
+use crate::traits::container;
+use crate::traits::container::Container as Cont;
 
 lazy_static! {
     static ref RE1: Regex = Regex::new(r"<dc:title.*<dcterms:created").unwrap();
@@ -47,100 +49,27 @@ lazy_static! {
 const TARGET: &[u8] = br#"<Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/custom-properties" Target="docProps/custom.xml"/></Relationships>"#;
 const REPLACEMENT: &[u8; 16] = br#"</Relationships>"#;
 
-
-struct MTUnitIn<T> {
-    data: T
-
-}
-impl MTUnitIn {
-    fn new(file_name: &dyn LoadFs) -> Result<(), Box<dyn std::error::Error>> {
-
-    }
-}
-
-struct MTUnitOut {
-    archive: Box<ZipWriter<File>>,
-    oldfilepath: String,
-    outfilepath: PathBuf
-}
-impl MTUnitOut {
-    fn new(mut mtunit: Box<MTUnitIn>,
-           algo: FileOptions)
-        -> Result<Box<MTUnitOut>, Box<dyn std::error::Error>> {
-        let outfile = mtunit.outfile;
-        let mut zipout_heap = Box::new(ZipWriter::new(outfile));
-        let mut zipout = &mut *zipout_heap;
-
-        for i in 0..mtunit.archive.len() {
-            let mut file = mtunit.archive.by_index(i)?;
-            let outpath = match file.enclosed_name() {
-                Some(path) => path.to_str().unwrap().to_owned(), //we unwrap because there's no possible way for path to be None. If it's none we're better off panicking.
-                None => continue,
-            };
-            let mut content = Vec::with_capacity(1024);
-
-            match outpath.as_str() {
-                to_edit @ mso_x_file_name_consts::CORE_XML => {
-                    let read_result = file.by_ref().read_to_end(&mut content)?;
-                    let corexml = std::str::from_utf8(&content)?;
-                    let replxml = replace_corexml(corexml);
-                    zipout.start_file(to_edit, algo)?;
-                    zipout.write_all(replxml.as_bytes())?;
-                }
-                to_edit @ mso_x_file_name_consts::RELS_XML => {
-                    file.read_to_end(&mut content);
-                    if let Some(index) = find_rells(&content) {
-                        // println!("{}", index);
-                        let rels = remove_rells(content, index);
-                        zipout.start_file(to_edit, algo)?;
-                        zipout.write_all(&rels);
-                    } else {
-                        zipout.start_file(to_edit, algo)?;
-                        zipout.write_all(content.as_slice());
-                    }
-                }
-                mso_x_file_name_consts::CUSTOM_XML => continue,
-                no_edit => {
-                    // file.read_to_end(&mut content).unwrap();
-                    zipout.start_file(no_edit, algo)?;
-                    // zipout.write_all(content.as_slice()).unwrap();
-                    io::copy(&mut file, &mut zipout);
-                }
-            }
-
-        }
-        let oldfilpath = mtunit.oldfilepath;
-        let oufilepath = mtunit.outfilepath;
-        Ok(Box::new(MTUnitOut{
-            archive: zipout_heap,
-            oldfilepath: oldfilpath,
-            outfilepath: oufilepath  }))
-
-
-    }
-}
-
 enum OutMessage {
-    Data(Box<MTUnitOut>),
+    Data(Cont),
     ComputeEnd
 }
 
 enum InMessage {
-    Data(Box<MTUnitIn>),
+    Data(Cont),
     ComputeEnd,
 }
-fn is_in(item: &DirEntry, filter: &Vec<&OsStr>) -> Result<Option<String>, std::io::Error> {
+fn is_in(item: &DirEntry, filter: &Vec<&OsStr>) -> Option<String> {
 
     let binding = item;
     let extension = binding.path().extension();
     if extension.is_none() {
-        Ok(None)
+        None
     }
     else if filter.contains(&extension.unwrap()) {
-        Ok(Some(item.path().to_string_lossy().into_owned()))
+        Some(item.path().to_string_lossy().into_owned())
     }
     else {
-        Ok(None)
+        None
     }
 
 }
@@ -177,16 +106,25 @@ fn iterate_over_archives(docs: Vec<String>,
                          orx: Receiver<OutMessage>,
                          lock: &Mutex<bool>,
                          cvar: &Condvar) {
-
+    let mut err_vec:Vec<PurgeErr> = vec![];
     let mut started = lock.lock().unwrap();
 
     for file_name in docs
     {
-        if let Ok(MTUnitIn) = MTUnitIn::new(&file_name) {
-            itx.send(InMessage::Data(MTUnitIn));
+        if let Some(cont) = Cont::new(&file_name) {
+            match cont.load() {
+                Ok(loaded) => {
+                    itx.send(InMessage::Data(loaded));
+                },
+                Err(err) => {
+                    err_vec.push(err);
+                    continue
+                },
+            }
         }
         else {
-            println!("what happened during MTUnitIn creation?");
+            println!("?? how exactly did not supported extension snuck up in here?");
+            continue
         };
     };
     itx.send(InMessage::ComputeEnd);
@@ -210,14 +148,15 @@ fn iterate_over_archives(docs: Vec<String>,
                 match message {
                     InMessage::Data(data) => {
                         drop(irx_locked);
-                        let out_archive = match MTUnitOut::new(data, algo) {
+                        let out_final = match data.process() {
                             Ok(content) => content,
                             Err(err) => {
-                                println!("{:?}", err);
-                                panic!()
+                                err_vec.push(err)
+                                // panic!() why is it here??
+
                             },
                         };
-                        otx.send(OutMessage::Data(out_archive));
+                        otx.send(OutMessage::Data(out_final));
                     },
                     InMessage::ComputeEnd => {
                         // otx.send(OutMessage::ComputeEnd).unwrap_or_else(|err| {
@@ -244,20 +183,16 @@ fn iterate_over_archives(docs: Vec<String>,
         if let Ok(message) = orx.try_recv() {
             match message {
                 OutMessage::Data(mut data) => {
-                    let outpath = data.outfilepath;
-                    // println!("{:?}", outpath);
-                    let oldpath = data.oldfilepath;
-                    // println!("{:?}", oldpath);
-                    data.archive.finish();
-                    fs::remove_file(&oldpath).unwrap();
-                    fs::rename(&outpath, &oldpath).unwrap();
+                   if let Err(err) =  data.save() {
+                       err_vec.push(err)
+                   }
                 }
                 OutMessage::ComputeEnd => {
                     break
                 }
             }
 
-        }else {
+        } else {
             // If try_recv() returns an Err, skip the rest of the loop iteration
             continue;
         }
@@ -276,13 +211,9 @@ fn iterate_over_archives(docs: Vec<String>,
         if let Ok(message) = orx.recv() {
             match message {
                 OutMessage::Data(mut data) => {
-                    let outpath = data.outfilepath;
-                    // println!("{:?}", outpath);
-                    let oldpath = data.oldfilepath;
-                    // println!("{:?}", oldpath);
-                    data.archive.finish();
-                    fs::remove_file(&oldpath).unwrap();
-                    fs::rename(&outpath, &oldpath).unwrap();
+                    if let Err(err) =  data.save() {
+                        err_vec.push(err)
+                    }
                 }
                 OutMessage::ComputeEnd => {
                     break
@@ -308,8 +239,8 @@ fn main() -> () {
         .partition(Result::is_ok);
 
     let filtered: Vec<String> = oks.into_iter()
-        .filter_map(|result| result.ok()) // Extract the `Ok` values
-        .flatten() // Flatten the `Vec<Option<String>>` into a `Vec<String>`
+        .filter_map(|result| result)
+        .flatten()
         .collect();
 
     // println!("{:?}", errs.into_iter());
@@ -318,8 +249,8 @@ fn main() -> () {
         return;
     }
 
-    let input_len_for_io = filtered.len();
-    let input_len_for_compute = input_len_for_io.clone();
+    // let input_len_for_io = filtered.len();
+    // let input_len_for_compute = input_len_for_io.clone();
 
 
     let (itx, irx) = channel();
@@ -351,10 +282,10 @@ fn main() -> () {
                     match message {
                         InMessage::Data(data) => {
                             drop(irx_locked);
-                            if let Ok(edited_data) = MTUnitOut::new(data, deflate) {
+                            if let Ok(edited_data) = data.process() {
                                 otx.send(OutMessage::Data(edited_data));
                             } else {
-                                panic!("for some reason creating MTUnitOut in the compute thread failed!");
+                                panic!("");
                             }
                         },
                         InMessage::ComputeEnd => {

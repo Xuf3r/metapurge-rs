@@ -9,22 +9,23 @@ use crate::errors::error::PurgeErr;
 
 use zip::{ZipArchive, ZipWriter};
 use zip::write::FileOptions;
-use crate::{find_rells, MTUnitOut, remove_rells, replace_corexml};
+use crate::{find_rells, remove_rells, replace_corexml};
 use crate::mso_x::mso_x_file_name_consts;
 
 use crate::traits::load_process_write::*;
 
 use lazy_static::lazy_static;
+use crate::pdf::PdfPath;
 
 
 lazy_static! {
     static ref DEFLATE_OPTION: FileOptions = FileOptions::default();
 }
-pub(crate) struct MsoXPath{
+pub(crate) struct MsoXPath {
     old_path: OsString,
     temp_path: OsString
 }
-pub(crate) struct MsoXData{
+pub(crate) struct MsoXData {
     src: Box<ZipArchive<File>>,
     dst: File,
     paths: MsoXPath,
@@ -34,7 +35,14 @@ pub(crate) struct MsoXFinal {
     paths: MsoXPath
 }
 
-
+impl MsoXPath {
+    pub(crate) fn new(path: &str) -> MsoXPath {
+        MsoXPath {
+            old_path: OsString::from(path),
+            temp_path: OsString::new()
+        }
+    }
+}
 impl LoadFs for MsoXPath {
     fn load(mut self) -> Result<MsoXData, PurgeErr> {
         let file = File::open(&self.old_path)?;
