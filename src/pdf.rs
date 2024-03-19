@@ -10,6 +10,8 @@ use lopdf::{Document, Object, ObjectId,};
 use std::str::{from_utf8, FromStr};
 use xmp_toolkit::{ToStringOptions, XmpError, XmpMeta, XmpValue};
 use crate::errors::error::PurgeErr;
+use crate::traits::container::{Container, PdfPipe};
+use crate::traits::container::PdfPipe::{PdfFinalVar, PdfPathVar};
 
 // /*lazy_static! {
 //     static ref PRODUCER_REGEX: Regex = Regex::new(r#"Producer(.*?)"#).unwrap();
@@ -24,20 +26,20 @@ use crate::errors::error::PurgeErr;
 // const SUBJECT_REPLACE: &str = "Subject()";
 // const KEYWORDS_REPLACE: &str = "Keywords()";
 // const CREATOR_REPLACE: &str = "Creator()";*/
-const ELEMENTS_TO_CLEAN: [(&str, &str,XmpValue<String>); 4] = [
-    ("http://purl.org/dc/elements/1.1/", "dc:title[1]", XmpValue::new("".to_owned())),
-    ("http://purl.org/dc/elements/1.1/", "dc:creator", XmpValue::new("".to_owned())),
-    ("http://ns.adobe.com/pdf/1.3/", "pdf:Producer", XmpValue::new("".to_owned())),
-    ("http://ns.adobe.com/xap/1.0/mm/", "xmp:CreatorTool", XmpValue::new("".to_owned())),
+const ELEMENTS_TO_CLEAN: [(&str, &str); 4] = [
+    ("http://purl.org/dc/elements/1.1/", "dc:title[1]" ),
+    ("http://purl.org/dc/elements/1.1/", "dc:creator", ),
+    ("http://ns.adobe.com/pdf/1.3/", "pdf:Producer"),
+    ("http://ns.adobe.com/xap/1.0/mm/", "xmp:CreatorTool"),
 ];
 
-fn clean_xmp(mut xmp: XmpMeta) -> Result<(), PurgeErr>{
-    for (ns, name, replace) in ELEMENTS_TO_CLEAN {
+fn clean_xmp(mut xmp: XmpMeta) -> Result<XmpMeta, PurgeErr>{
+    for (ns, name) in ELEMENTS_TO_CLEAN {
         if let Some(val) = xmp.property(ns,name) {
-            xmp.set_property(ns, name, &replace)?
+            xmp.set_property(ns, name, &XmpValue::new("".to_owned()))?
         }
     }
-    Ok(())
+    Ok(xmp)
 }
 
 pub(crate) struct PdfPath{
@@ -62,20 +64,22 @@ impl PdfPath {
     }
 }
 impl LoadFs for PdfPath {
-    fn load(mut self) -> Result<PdfData, PurgeErr> {
+    fn load(mut self) -> Result<Container, PurgeErr> {
         // Open the file
         let doc = Document::load(&self.old_path)?;
         let mut temp = OsString::from(&self.old_path);
         temp.push("_temp");
         self.temp_path = temp;
 
-        // Return PdfData
-        Ok(PdfData{src: Box::new(doc), paths: self})
+        Ok(Container::PdfPipe(PdfPipe::PdfDataVar(
+            PdfData{src: Box::new(doc), paths: self}
+        ))
+        )
     }
 }
 
 impl Process for PdfData {
-    fn process(mut self) -> Result<PdfFinal, PurgeErr> {
+    fn process(mut self) -> Result<Container, PurgeErr> {
 
         let pdf_metadata_keys: HashSet<&str> = [
         "Title", "Author", "Subject", "Keywords", "Creator", "Producer", "CreationDate", "ModDate"
@@ -105,16 +109,16 @@ impl Process for PdfData {
                 // println!("pong! {:?} with id {:?} is empty now and marked for deletion!", &object, &object_id);
                 empty_dicts.push(object_id.clone());
             }
-        } else if let Ok(mut strm) = object.as_stream() {
+        } else if let Ok(&mut ref mut strm) = object.as_stream_mut() {
                 if strm.dict.has("Subtype".as_bytes()) & strm.dict.has("Type".as_bytes()) {
                     let byte_slice: &[u8] = &strm.content;
                     let string_slice: &str = unsafe {
                         // Safety: We're asserting that the byte slice contains valid UTF-8 data
-                        str::from_utf8_unchecked(byte_slice)
+                        std::str::from_utf8_unchecked(byte_slice)
                     };
                     let mut loaded = xmp_toolkit::XmpMeta::from_str(string_slice)?;
-                    if let Ok(()) = clean_xmp(loaded) {
-                        let cleaned_xmp = loaded.to_string_with_options(ToStringOptions::default())?;
+                    if let Ok(cleaned) = clean_xmp(loaded) {
+                        let cleaned_xmp = cleaned.to_string_with_options(ToStringOptions::default())?;
                         strm.set_content(cleaned_xmp.as_bytes().to_vec());
                     }
                 }
@@ -125,7 +129,10 @@ impl Process for PdfData {
 
         // doc.compress(); //i don't know when to use it. technically since neither xmp nor sane metadata is compressed we might not compress
 
-        Ok(PdfFinal {finaldata: self.src, paths: self.paths})
+        Ok(
+            Container::PdfPipe(PdfFinalVar(PdfFinal {finaldata: self.src, paths: self.paths}))
+
+        )
     }
 }
 

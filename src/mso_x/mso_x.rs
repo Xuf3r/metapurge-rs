@@ -16,6 +16,8 @@ use crate::traits::load_process_write::*;
 
 use lazy_static::lazy_static;
 use crate::pdf::PdfPath;
+use crate::traits::container::{Container, MsoXPipe};
+use crate::traits::container::MsoXPipe::{MsoXFinalVar, MsoXPathVar};
 
 
 lazy_static! {
@@ -44,7 +46,7 @@ impl MsoXPath {
     }
 }
 impl LoadFs for MsoXPath {
-    fn load(mut self) -> Result<MsoXData, PurgeErr> {
+    fn load(mut self) -> Result<Container, PurgeErr> {
         let file = File::open(&self.old_path)?;
         let archive = Box::new(ZipArchive::new(file)?);
 
@@ -55,12 +57,14 @@ impl LoadFs for MsoXPath {
 
         let outfile = File::create(&self.temp_path)?;
 
-        Ok(MsoXData { src: archive, dst: outfile, paths: self })
+        Ok(
+            Container::MsoXPipe(MsoXPipe::MsoXDataVar(MsoXData { src: archive, dst: outfile, paths: self }))
+        )
     }
 }
 
 impl Process for MsoXData {
-    fn process(mut self) -> Result<MsoXFinal, PurgeErr> {
+    fn process(mut self) -> Result<Container, PurgeErr> {
         let outfile = self.dst;
         let mut zipout_heap = Box::new(ZipWriter::new(outfile));
         let mut zipout = &mut *zipout_heap;
@@ -68,7 +72,10 @@ impl Process for MsoXData {
         for i in 0..self.src.len() {
             let mut file = self.src.by_index(i)?;
             let outpath = match file.enclosed_name() {
-                Some(path) => path.to_str()?.to_owned(), //we unwrap because there's no possible way for path to be None. If it's none we're better off panicking.
+                Some(path) => path
+                    .to_str()
+                    .expect("how did Some() produce none?")
+                    .to_owned(), //we unwrap because there's no possible way for path to be None. If it's none we're better off panicking.
                 None => continue,
             };
             let mut content = Vec::with_capacity(1024);
@@ -104,18 +111,18 @@ impl Process for MsoXData {
 
         }
         
-        Ok(MsoXFinal {
-            finaldata: zipout_heap,
-            paths: self.paths,
-        })
+        Ok(
+            Container::MsoXPipe(MsoXFinalVar(MsoXFinal { finaldata: zipout_heap, paths: self.paths }))
+        )
     }
 }
 
 impl Finalize for MsoXFinal {
     fn save(mut self) -> Result<(), PurgeErr> {
 
+
     self.finaldata.finish()?;
-        fs::remove_file(&self.paths.temp_path)?;
+        fs::remove_file(&self.paths.old_path)?;
         fs::rename(&self.paths.temp_path, &self.paths.old_path)?;
         Ok(())
 

@@ -4,9 +4,8 @@ extern crate core;
 
 use mso_x::mso_x_core_xml_templates; // it doesn't seem to be used at all
 
-mod mso_x_file_name_consts;
+
 mod pdf;
-mod load_process_write;
 mod mso_x;
 mod traits;
 mod errors;
@@ -114,6 +113,7 @@ fn iterate_over_archives(docs: Vec<String>,
         if let Some(cont) = Cont::new(&file_name) {
             match cont.load() {
                 Ok(loaded) => {
+
                     itx.send(InMessage::Data(loaded));
                 },
                 Err(err) => {
@@ -123,7 +123,7 @@ fn iterate_over_archives(docs: Vec<String>,
             }
         }
         else {
-            println!("?? how exactly did not supported extension snuck up in here?");
+            println!("?? how exactly did not supported extension snuck up in here? it's:" );
             continue
         };
     };
@@ -148,15 +148,18 @@ fn iterate_over_archives(docs: Vec<String>,
                 match message {
                     InMessage::Data(data) => {
                         drop(irx_locked);
-                        let out_final = match data.process() {
-                            Ok(content) => content,
+                         match data.process() {
+                            Ok(content) => {
+
+                                let _ = otx.send(OutMessage::Data(content));
+                            },
                             Err(err) => {
-                                err_vec.push(err)
+                               let _ = err_vec.push(err);
                                 // panic!() why is it here??
 
                             },
                         };
-                        otx.send(OutMessage::Data(out_final));
+
                     },
                     InMessage::ComputeEnd => {
                         // otx.send(OutMessage::ComputeEnd).unwrap_or_else(|err| {
@@ -209,8 +212,10 @@ fn iterate_over_archives(docs: Vec<String>,
 
     loop {
         if let Ok(message) = orx.recv() {
+
             match message {
                 OutMessage::Data(mut data) => {
+
                     if let Err(err) =  data.save() {
                         err_vec.push(err)
                     }
@@ -229,18 +234,17 @@ fn main() -> () {
     // let start_time = Instant::now();
 
 
-    let filter_vec = vec![OsStr::new("docx"),OsStr::new("xlsx")];
+    let filter_vec = vec![OsStr::new("docx"),OsStr::new("xlsx"),OsStr::new("pdf")];
     let filter_set: HashSet<_> = filter_vec.iter().cloned().collect();
 
     let (oks, errs): (Vec<_>, Vec<_>) = WalkDir::new("C:\\Users\\stp\\ferrprojs\\test0")
         .into_iter()
         .filter_map(Result::ok)
         .map(|path| is_in(&path, &filter_vec))
-        .partition(Result::is_ok);
+        .partition(Option::is_some);
 
     let filtered: Vec<String> = oks.into_iter()
         .filter_map(|result| result)
-        .flatten()
         .collect();
 
     // println!("{:?}", errs.into_iter());
@@ -283,6 +287,7 @@ fn main() -> () {
                         InMessage::Data(data) => {
                             drop(irx_locked);
                             if let Ok(edited_data) = data.process() {
+
                                 otx.send(OutMessage::Data(edited_data));
                             } else {
                                 panic!("");
@@ -319,6 +324,7 @@ fn main() -> () {
     });
     io_thread.join().unwrap();
     compute_thread.join().unwrap();
+
 }
 
 
