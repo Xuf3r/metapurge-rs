@@ -1,14 +1,20 @@
 use std::io;
 use std::str::Utf8Error;
+use std::sync::mpsc::SendError;
 use xmp_toolkit::XmpError;
 use zip::result::ZipError;
 use lopdf::Error;
+use crate::OutMessage;
+
+#[derive(Debug)]
 pub(crate) enum PurgeErr {
     IoError(io::Error),
     XmpError(XmpError),
     ZipError(ZipError),
     LopdfError(lopdf::Error),
-    UTF8Error(Utf8Error)
+    UTF8Error(Utf8Error),
+    SendErrOut(SendError<OutMessage>),
+    DirError(walkdir::Error)
     // Add other error types as needed
 }
 
@@ -40,5 +46,18 @@ impl From<lopdf::Error> for PurgeErr {
 impl From<Utf8Error> for PurgeErr {
     fn from(error: Utf8Error) -> Self {
         PurgeErr::UTF8Error(error)
+    }
+}
+
+
+impl From<SendError<OutMessage>> for PurgeErr {
+    fn from(error: SendError<OutMessage>) -> Self {
+        PurgeErr::SendErrOut(error)
+    }
+}
+
+impl From<walkdir::Error> for PurgeErr {
+    fn from(error: walkdir::Error) -> Self {
+        PurgeErr::DirError(error)
     }
 }

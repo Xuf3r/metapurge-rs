@@ -34,7 +34,6 @@ const XLSX: &str = "xlsx";
     impl Container {
         pub(crate) fn new (path: &str) -> Option<Container> {
             let extension = Path::new(path).extension().unwrap().to_str().unwrap();
-            println!("{:?}", extension);
             match extension.clone() {
                 PDF => Some(Container::PdfPipe(PdfPathVar(PdfPath::new(path)))) ,
                 DOCX | XLSX => Some(Container::MsoXPipe(MsoXPathVar(MsoXPath::new(path)))),
@@ -75,13 +74,13 @@ impl Container {
     pub(crate) fn save (self) -> Result<(), PurgeErr> {
         match self {
             Container::PdfPipe(PdfFinalVar(pdffinal)) => {
-                println!("all ok 5 - calling save");
+
                 pdffinal.save()?;
                 Ok(())
 
             },
             Container::MsoXPipe(MsoXFinalVar(msoxfinal)) => {
-                println!("all ok 5 - calling save");
+
                 msoxfinal.save()?;
                 Ok(())
             },

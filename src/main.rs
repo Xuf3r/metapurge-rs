@@ -59,8 +59,8 @@ enum InMessage {
 }
 fn is_in(item: &DirEntry, filter: &Vec<&OsStr>) -> Option<String> {
 
-    let binding = item;
-    let extension = binding.path().extension();
+    // let binding = item;
+    let extension = item.path().extension();
     if extension.is_none() {
         None
     }
@@ -104,7 +104,7 @@ fn iterate_over_archives(docs: Vec<String>,
                          otx: Sender<OutMessage>,
                          orx: Receiver<OutMessage>,
                          lock: &Mutex<bool>,
-                         cvar: &Condvar) {
+                         cvar: &Condvar) -> Vec<PurgeErr>{
     let mut err_vec:Vec<PurgeErr> = vec![];
     let mut started = lock.lock().unwrap();
 
@@ -226,7 +226,7 @@ fn iterate_over_archives(docs: Vec<String>,
             }
         }
     };
-
+err_vec
 }
 
 fn main() -> () {
@@ -237,15 +237,17 @@ fn main() -> () {
     let filter_vec = vec![OsStr::new("docx"),OsStr::new("xlsx"),OsStr::new("pdf")];
     let filter_set: HashSet<_> = filter_vec.iter().cloned().collect();
 
-    let (oks, errs): (Vec<_>, Vec<_>) = WalkDir::new("C:\\Users\\stp\\ferrprojs\\test0")
+    let (oks, errs): (Vec<_>, Vec<_>) = WalkDir::new("C:\\$Recycle.Bin")
         .into_iter()
-        .filter_map(Result::ok)
-        .map(|path| is_in(&path, &filter_vec))
-        .partition(Option::is_some);
+        .partition(|path|path.is_ok());
 
-    let filtered: Vec<String> = oks.into_iter()
-        .filter_map(|result| result)
+
+    let filtered:Vec<String> = oks
+        .iter()
+        .filter_map(|path| is_in(path.as_ref().unwrap(), &filter_vec))
         .collect();
+
+    let errs: Vec<PurgeErr> = errs.into_iter().map(|err| PurgeErr::from(err.unwrap_err())).collect();
 
     // println!("{:?}", errs.into_iter());
     // println!("{:?}", &filtered);
@@ -271,12 +273,13 @@ fn main() -> () {
     let io_thread = thread::spawn(move || {
         let (lock, cvar) = &*pair;
 
-        iterate_over_archives(filtered, deflate, itx, irx_arc_io, otx_io, orx, lock, cvar);
+        iterate_over_archives(filtered, deflate, itx, irx_arc_io, otx_io, orx, lock, cvar)
 
         });
 
 
     let compute_thread = thread::spawn(move || {
+        let mut err_vec: Vec<PurgeErr> = vec![];
         let (lock, cvar) = &*pair2;
         thread::sleep(Duration::new(0, 50*100));
         loop {
@@ -286,11 +289,13 @@ fn main() -> () {
                     match message {
                         InMessage::Data(data) => {
                             drop(irx_locked);
-                            if let Ok(edited_data) = data.process() {
-
-                                otx.send(OutMessage::Data(edited_data));
-                            } else {
-                                panic!("");
+                            match  data.process() {
+                                Ok(edited_data) =>  {
+                                    if let Err(err ) = otx.send(OutMessage::Data(edited_data)) {
+                                        err_vec.push(PurgeErr::from(err))
+                                    }
+                                },
+                                Err(err) => err_vec.push(err)
                             }
                         },
                         InMessage::ComputeEnd => {
@@ -320,11 +325,14 @@ fn main() -> () {
             };
 
         }
-
+    err_vec
     });
-    io_thread.join().unwrap();
-    compute_thread.join().unwrap();
-
+    let mut io_errs = io_thread.join().unwrap();
+    let mut c_errs = compute_thread.join().unwrap();
+    let mut all_errs = io_errs.into_iter().chain(c_errs.into_iter()).chain(errs.into_iter());
+    for err in all_errs.collect::<Vec<PurgeErr>>() {
+        println!("{:?}", err);
+    }
 }
 
 
