@@ -7,7 +7,7 @@ use crate::mso_x::mso_x::MsoXPath;
 use crate::pdf::PdfPath;
 use crate::traits::container::MsoXPipe::*;
 use crate::traits::container::PdfPipe::*;
-use crate::traits::load_process_write::{LoadFs, Process, Finalize};
+use crate::traits::load_process_write::{LoadFs, Process, Finalize, Getpath};
 
 
 // const SUPPORTED_EXT: [&str; 2] = ["docx", "xlsx"];
@@ -86,5 +86,24 @@ impl Container {
             },
             _ => panic!("FOLLOW THE PIPELINE ORDER")
         }
+    }
+}
+
+impl Container {
+    pub(crate)  fn getpath(&self) -> String {
+match &self {
+    Container::PdfPipe(x) => {match x {
+        PdfPathVar(x) => {x.getpath()}
+        PdfDataVar(x) => {x.getpath()}
+        PdfFinalVar(x) => {x.getpath()}
+    }
+    }
+    Container::MsoXPipe(x) => {match x {
+        MsoXPathVar(x) => {x.getpath()}
+        MsoXDataVar(x) => {x.getpath()}
+        MsoXFinalVar(x) => {x.getpath()}
+    }}
+}
+
     }
 }

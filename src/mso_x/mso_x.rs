@@ -37,6 +37,21 @@ pub(crate) struct MsoXFinal {
     paths: MsoXPath
 }
 
+impl Getpath for MsoXPath{
+    fn getpath(&self) -> String {
+        self.old_path.clone().into_string().unwrap()
+    }
+}
+impl Getpath for MsoXData{
+    fn getpath(&self) -> String {
+        self.paths.old_path.clone().into_string().unwrap()
+    }
+}
+impl Getpath for MsoXFinal{
+    fn getpath(&self) -> String {
+        self.paths.old_path.clone().into_string().unwrap()
+    }
+}
 impl MsoXPath {
     pub(crate) fn new(path: &str) -> MsoXPath {
         MsoXPath {

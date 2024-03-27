@@ -29,7 +29,7 @@ use regex::Regex;
 use zip::write::FileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 use lazy_static::lazy_static;
-use crate::errors::error::PurgeErr;
+use crate::errors::error::{PurgeErr, ToUser, UISideErr};
 use crate::traits::load_process_write::LoadFs;
 use crate::traits::container;
 use crate::traits::container::Container as Cont;
@@ -104,8 +104,8 @@ fn iterate_over_archives(docs: Vec<String>,
                          otx: Sender<OutMessage>,
                          orx: Receiver<OutMessage>,
                          lock: &Mutex<bool>,
-                         cvar: &Condvar) -> Vec<PurgeErr>{
-    let mut err_vec:Vec<PurgeErr> = vec![];
+                         cvar: &Condvar) -> Vec<UISideErr> {
+    let mut err_vec:Vec<UISideErr> = vec![];
     let mut started = lock.lock().unwrap();
 
     for file_name in docs
@@ -117,7 +117,7 @@ fn iterate_over_archives(docs: Vec<String>,
                     itx.send(InMessage::Data(loaded));
                 },
                 Err(err) => {
-                    err_vec.push(err);
+                    err_vec.push(err.to_user(file_name.clone()));
                     continue
                 },
             }
@@ -144,17 +144,18 @@ fn iterate_over_archives(docs: Vec<String>,
         //checked the lock
 
         match irx_locked.try_recv() {
-            Ok(message) => {
+            Ok(message) =>  {
                 match message {
                     InMessage::Data(data) => {
                         drop(irx_locked);
+                        let context = data.getpath();
                          match data.process() {
                             Ok(content) => {
 
                                 let _ = otx.send(OutMessage::Data(content));
                             },
                             Err(err) => {
-                               let _ = err_vec.push(err);
+                               let _ = err_vec.push(err.to_user(context));
                                 // panic!() why is it here??
 
                             },
@@ -186,8 +187,9 @@ fn iterate_over_archives(docs: Vec<String>,
         if let Ok(message) = orx.try_recv() {
             match message {
                 OutMessage::Data(mut data) => {
+                    let context = data.getpath();
                    if let Err(err) =  data.save() {
-                       err_vec.push(err)
+                       err_vec.push(err.to_user(context));
                    }
                 }
                 OutMessage::ComputeEnd => {
@@ -215,9 +217,9 @@ fn iterate_over_archives(docs: Vec<String>,
 
             match message {
                 OutMessage::Data(mut data) => {
-
+                    let context = data.getpath();
                     if let Err(err) =  data.save() {
-                        err_vec.push(err)
+                        err_vec.push(err.to_user(context));
                     }
                 }
                 OutMessage::ComputeEnd => {
@@ -247,11 +249,17 @@ fn main() -> () {
         .filter_map(|path| is_in(path.as_ref().unwrap(), &filter_vec))
         .collect();
 
-    let errs: Vec<PurgeErr> = errs.into_iter().map(|err| PurgeErr::from(err.unwrap_err())).collect();
+    let mut errs: Vec<UISideErr> = errs
+        .into_iter()
+        .map(|err| PurgeErr::from(err.unwrap_err()).to_user("".to_string()))
+        .collect();
 
     // println!("{:?}", errs.into_iter());
     // println!("{:?}", &filtered);
     if filtered.len() == 0 {
+        for err in errs {
+            println!("{}", err.ui_show());
+        }
         return;
     }
 
@@ -279,7 +287,7 @@ fn main() -> () {
 
 
     let compute_thread = thread::spawn(move || {
-        let mut err_vec: Vec<PurgeErr> = vec![];
+        let mut err_vec: Vec<UISideErr> = vec![];
         let (lock, cvar) = &*pair2;
         thread::sleep(Duration::new(0, 50*100));
         loop {
@@ -289,13 +297,14 @@ fn main() -> () {
                     match message {
                         InMessage::Data(data) => {
                             drop(irx_locked);
+                            let context = data.getpath();
                             match  data.process() {
                                 Ok(edited_data) =>  {
                                     if let Err(err ) = otx.send(OutMessage::Data(edited_data)) {
-                                        err_vec.push(PurgeErr::from(err))
+                                        err_vec.push(PurgeErr::from(err).to_user(context))
                                     }
                                 },
-                                Err(err) => err_vec.push(err)
+                                Err(err) => err_vec.push(PurgeErr::from(err).to_user(context))
                             }
                         },
                         InMessage::ComputeEnd => {
@@ -327,11 +336,11 @@ fn main() -> () {
         }
     err_vec
     });
-    let mut io_errs = io_thread.join().unwrap();
-    let mut c_errs = compute_thread.join().unwrap();
-    let mut all_errs = io_errs.into_iter().chain(c_errs.into_iter()).chain(errs.into_iter());
-    for err in all_errs.collect::<Vec<PurgeErr>>() {
-        println!("{:?}", err);
+    errs.extend(io_thread.join().unwrap());
+    errs.extend(compute_thread.join().unwrap());
+
+    for err in errs {
+        println!("{}", err.ui_show());
     }
 }
 

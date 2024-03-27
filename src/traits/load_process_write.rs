@@ -13,3 +13,7 @@ pub trait Process {
 pub trait Finalize {
     fn save(self) -> Result<(), PurgeErr>;
 }
+
+pub trait Getpath {
+    fn getpath(&self) -> String;
+}

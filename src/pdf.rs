@@ -10,6 +10,7 @@ use lopdf::{Document, Object, ObjectId,};
 use std::str::{from_utf8, FromStr};
 use xmp_toolkit::{ToStringOptions, XmpError, XmpMeta, XmpValue};
 use crate::errors::error::PurgeErr;
+use crate::mso_x::mso_x::{MsoXData, MsoXFinal, MsoXPath};
 use crate::traits::container::{Container, PdfPipe};
 use crate::traits::container::PdfPipe::{PdfFinalVar, PdfPathVar};
 
@@ -53,6 +54,22 @@ pub(crate) struct PdfData{
 pub(crate) struct PdfFinal {
     finaldata: Box<lopdf::Document>,
     paths: PdfPath
+}
+
+impl Getpath for PdfPath{
+    fn getpath(&self) -> String {
+        self.old_path.clone().into_string().unwrap()
+    }
+}
+impl Getpath for PdfData{
+    fn getpath(&self) -> String {
+        self.paths.old_path.clone().into_string().unwrap()
+    }
+}
+impl Getpath for PdfFinal{
+    fn getpath(&self) -> String {
+        self.paths.old_path.clone().into_string().unwrap()
+    }
 }
 
 impl PdfPath {
