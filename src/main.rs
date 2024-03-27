@@ -13,7 +13,7 @@ mod errors;
 use core::slice::SlicePattern;
 use std::ffi::OsStr;
 use std::fmt::Error;
-use std::{fs, io, ptr, thread};
+use std::{env, fs, io, ptr, thread};
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufRead, Cursor, Read, SeekFrom, Write};
@@ -256,7 +256,12 @@ fn main() -> () {
     let filter_vec = vec![OsStr::new("docx"),OsStr::new("xlsx"),OsStr::new("pdf")];
     let filter_set: HashSet<_> = filter_vec.iter().cloned().collect();
 
-    let (oks, errs): (Vec<_>, Vec<_>) = WalkDir::new("C:\\Users\\stp\\ferrprojs\\test0")
+    let path = env::args().nth(1).unwrap_or_else(|| {
+        println!("Usage: {} <directory>", env::args().next().unwrap());
+        std::process::exit(1);
+    });
+
+    let (oks, errs): (Vec<_>, Vec<_>) = WalkDir::new(path)
         .into_iter()
         .partition(|path|path.is_ok());
 
