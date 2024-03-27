@@ -33,6 +33,23 @@ use crate::errors::error::{PurgeErr, ToUser, UISideErr};
 use crate::traits::load_process_write::LoadFs;
 use crate::traits::container;
 use crate::traits::container::Container as Cont;
+use native_dialog::{MessageDialog, MessageType};
+
+
+fn echo(name: &str) {
+    MessageDialog::new()
+        .set_title("Result")
+        .set_text(&format!("{}", &name))
+        .show_alert()
+        .unwrap();
+}
+fn echo_succ() {
+    MessageDialog::new()
+        .set_title("Success")
+        .set_text(&format!("All documents have been successfully purged"))
+        .show_alert()
+        .unwrap();
+}
 
 lazy_static! {
     static ref RE1: Regex = Regex::new(r"<dc:title.*<dcterms:created").unwrap();
@@ -239,7 +256,7 @@ fn main() -> () {
     let filter_vec = vec![OsStr::new("docx"),OsStr::new("xlsx"),OsStr::new("pdf")];
     let filter_set: HashSet<_> = filter_vec.iter().cloned().collect();
 
-    let (oks, errs): (Vec<_>, Vec<_>) = WalkDir::new("C:\\$Recycle.Bin")
+    let (oks, errs): (Vec<_>, Vec<_>) = WalkDir::new("C:\\Users\\stp\\ferrprojs\\test0")
         .into_iter()
         .partition(|path|path.is_ok());
 
@@ -257,9 +274,11 @@ fn main() -> () {
     // println!("{:?}", errs.into_iter());
     // println!("{:?}", &filtered);
     if filtered.len() == 0 {
-        for err in errs {
-            println!("{}", err.ui_show());
-        }
+        let errs = errs.into_iter().map( |item| item.ui_show()).collect::<Vec<String>>().join("\n");
+
+        echo(&errs);
+
+
         return;
     }
 
@@ -339,9 +358,11 @@ fn main() -> () {
     errs.extend(io_thread.join().unwrap());
     errs.extend(compute_thread.join().unwrap());
 
-    for err in errs {
-        println!("{}", err.ui_show());
+    if errs.len() != 0 {
+        let errs = errs.into_iter().map(|item| item.ui_show()).collect::<Vec<String>>().join("\n");
+        echo(&errs);
     }
+    echo_succ();
 }
 
 

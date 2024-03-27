@@ -15,9 +15,11 @@ pub(crate) struct UISideErr {
     info: String
 }
 
+
+
 impl UISideErr {
     pub(crate) fn ui_show(self) -> String {
-        format!("Failed to clean file at {} . Reason: {}", self.path, self.info)
+        format!("Failed to clean file at {} .\n Reason: {} \n", self.path, self.info)
     }
 
 }
