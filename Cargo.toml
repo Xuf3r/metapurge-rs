@@ -10,6 +10,8 @@ walkdir = "2"
 zip = "0.6"
 regex = "1.10.3"
 lazy_static = "1.4.0"
+lopdf = { version = "0.32.0", features = ["pom_parser"] }
+xmp_toolkit = "1.7.2"
 [[bin]]
 name = "test0"
 path = "src/main.rs"

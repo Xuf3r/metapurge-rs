@@ -2,14 +2,19 @@
 #![feature(const_trait_impl)]
 extern crate core;
 
-mod consts;
+use mso_x::mso_x_core_xml_templates; // it doesn't seem to be used at all
 
-mod xml_consts;
+
+mod pdf;
+mod mso_x;
+mod traits;
+mod errors;
 
 use core::slice::SlicePattern;
 use std::ffi::OsStr;
 use std::fmt::Error;
 use std::{fs, io, ptr, thread};
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufRead, Cursor, Read, SeekFrom, Write};
 use std::ops::Deref;
@@ -19,12 +24,15 @@ use std::str::from_utf8;
 use std::sync::{Arc, Mutex, Condvar};
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
-use crate::consts::*;
+use crate::mso_x_core_xml_templates::*; // this doesn't seem to be used at all
 use regex::Regex;
 use zip::write::FileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 use lazy_static::lazy_static;
-
+use crate::errors::error::{PurgeErr, ToUser, UISideErr};
+use crate::traits::load_process_write::LoadFs;
+use crate::traits::container;
+use crate::traits::container::Container as Cont;
 
 lazy_static! {
     static ref RE1: Regex = Regex::new(r"<dc:title.*<dcterms:created").unwrap();
@@ -40,112 +48,27 @@ lazy_static! {
 const TARGET: &[u8] = br#"<Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/custom-properties" Target="docProps/custom.xml"/></Relationships>"#;
 const REPLACEMENT: &[u8; 16] = br#"</Relationships>"#;
 
-struct MTUnitIn {
-    archive: Box<ZipArchive<File>>,
-    outfile: File,
-    oldfilepath: String,
-    outfilepath: PathBuf
-
-}
-impl MTUnitIn {
-    fn new(file_name: &String) -> Result<Box<MTUnitIn>, Box<dyn std::error::Error>> {
-        let file = File::open(file_name)?;
-        let archive = Box::new(ZipArchive::new(file)?);
-        let outdocxpath = format!("{file_name}_temp");
-        let outdocxpath_2 = outdocxpath.clone();
-        let outfile = File::create(&outdocxpath).unwrap();
-
-        Ok(Box::new(MTUnitIn {
-            archive,
-            outfile,
-            oldfilepath: file_name.clone(),
-            outfilepath: PathBuf::from(outdocxpath_2)}))
-    }
-}
-
-struct MTUnitOut {
-    archive: Box<ZipWriter<File>>,
-    oldfilepath: String,
-    outfilepath: PathBuf
-}
-impl MTUnitOut {
-    fn new(mut mtunit: Box<MTUnitIn>,
-           algo: FileOptions)
-        -> Result<Box<MTUnitOut>, Box<dyn std::error::Error>> {
-        let outfile = mtunit.outfile;
-        let mut zipout_heap = Box::new(ZipWriter::new(outfile));
-        let mut zipout = &mut *zipout_heap;
-
-        for i in 0..mtunit.archive.len() {
-            let mut file = mtunit.archive.by_index(i)?;
-            let outpath = match file.enclosed_name() {
-                Some(path) => path.to_str().unwrap().to_owned(), //we unwrap because there's no possible way for path to be None. If it's none we're better off panicking.
-                None => continue,
-            };
-            let mut content = Vec::with_capacity(1000);
-
-            match outpath.as_str() {
-                to_edit @ xml_consts::CORE_XML => {
-                    let read_result = file.by_ref().read_to_end(&mut content)?;
-                    let corexml = std::str::from_utf8(&content)?;
-                    let replxml = replace_corexml(corexml);
-                    zipout.start_file(to_edit, algo)?;
-                    zipout.write_all(replxml.as_bytes())?;
-                }
-                to_edit @ xml_consts::RELS_XML => {
-                    file.read_to_end(&mut content);
-                    if let Some(index) = find_rells(&content) {
-                        // println!("{}", index);
-                        let rels = remove_rells(content, index);
-                        zipout.start_file(to_edit, algo)?;
-                        zipout.write_all(&rels);
-                    } else {
-                        zipout.start_file(to_edit, algo)?;
-                        zipout.write_all(content.as_slice());
-                    }
-                }
-                xml_consts::CUSTOM_XML => continue,
-                no_edit => {
-                    // file.read_to_end(&mut content).unwrap();
-                    zipout.start_file(no_edit, algo)?;
-                    // zipout.write_all(content.as_slice()).unwrap();
-                    io::copy(&mut file, &mut zipout);
-                }
-            }
-
-        }
-        let oldfilpath = mtunit.oldfilepath;
-        let oufilepath = mtunit.outfilepath;
-        Ok(Box::new(MTUnitOut{
-            archive: zipout_heap,
-            oldfilepath: oldfilpath,
-            outfilepath: oufilepath  }))
-
-
-    }
-}
-
 enum OutMessage {
-    Data(Box<MTUnitOut>),
+    Data(Cont),
     ComputeEnd
 }
 
 enum InMessage {
-    Data(Box<MTUnitIn>),
+    Data(Cont),
     ComputeEnd,
 }
-fn is_in(item: &DirEntry, filter: &Vec<&OsStr>) -> Result<Option<String>, std::io::Error> {
+fn is_in(item: &DirEntry, filter: &Vec<&OsStr>) -> Option<String> {
 
-    let binding = item;
-    let extension = binding.path().extension();
+    // let binding = item;
+    let extension = item.path().extension();
     if extension.is_none() {
-        Ok(None)
+        None
     }
     else if filter.contains(&extension.unwrap()) {
-        Ok(Some(item.path().to_string_lossy().into_owned()))
+        Some(item.path().to_string_lossy().into_owned())
     }
     else {
-        Ok(None)
+        None
     }
 
 }
@@ -181,17 +104,27 @@ fn iterate_over_archives(docs: Vec<String>,
                          otx: Sender<OutMessage>,
                          orx: Receiver<OutMessage>,
                          lock: &Mutex<bool>,
-                         cvar: &Condvar) {
-
+                         cvar: &Condvar) -> Vec<UISideErr> {
+    let mut err_vec:Vec<UISideErr> = vec![];
     let mut started = lock.lock().unwrap();
 
     for file_name in docs
     {
-        if let Ok(MTUnitIn) = MTUnitIn::new(&file_name) {
-            itx.send(InMessage::Data(MTUnitIn));
+        if let Some(cont) = Cont::new(&file_name) {
+            match cont.load() {
+                Ok(loaded) => {
+
+                    itx.send(InMessage::Data(loaded));
+                },
+                Err(err) => {
+                    err_vec.push(err.to_user(file_name.clone()));
+                    continue
+                },
+            }
         }
         else {
-            println!("what happened during MTUnitIn creation?");
+            println!("?? how exactly did not supported extension snuck up in here? it's:" );
+            continue
         };
     };
     itx.send(InMessage::ComputeEnd);
@@ -211,18 +144,23 @@ fn iterate_over_archives(docs: Vec<String>,
         //checked the lock
 
         match irx_locked.try_recv() {
-            Ok(message) => {
+            Ok(message) =>  {
                 match message {
                     InMessage::Data(data) => {
                         drop(irx_locked);
-                        let out_archive = match MTUnitOut::new(data, algo) {
-                            Ok(content) => content,
+                        let context = data.getpath();
+                         match data.process() {
+                            Ok(content) => {
+
+                                let _ = otx.send(OutMessage::Data(content));
+                            },
                             Err(err) => {
-                                println!("{:?}", err);
-                                panic!()
+                               let _ = err_vec.push(err.to_user(context));
+                                // panic!() why is it here??
+
                             },
                         };
-                        otx.send(OutMessage::Data(out_archive));
+
                     },
                     InMessage::ComputeEnd => {
                         // otx.send(OutMessage::ComputeEnd).unwrap_or_else(|err| {
@@ -249,20 +187,17 @@ fn iterate_over_archives(docs: Vec<String>,
         if let Ok(message) = orx.try_recv() {
             match message {
                 OutMessage::Data(mut data) => {
-                    let outpath = data.outfilepath;
-                    // println!("{:?}", outpath);
-                    let oldpath = data.oldfilepath;
-                    // println!("{:?}", oldpath);
-                    data.archive.finish();
-                    fs::remove_file(&oldpath).unwrap();
-                    fs::rename(&outpath, &oldpath).unwrap();
+                    let context = data.getpath();
+                   if let Err(err) =  data.save() {
+                       err_vec.push(err.to_user(context));
+                   }
                 }
                 OutMessage::ComputeEnd => {
                     break
                 }
             }
 
-        }else {
+        } else {
             // If try_recv() returns an Err, skip the rest of the loop iteration
             continue;
         }
@@ -279,15 +214,13 @@ fn iterate_over_archives(docs: Vec<String>,
 
     loop {
         if let Ok(message) = orx.recv() {
+
             match message {
                 OutMessage::Data(mut data) => {
-                    let outpath = data.outfilepath;
-                    // println!("{:?}", outpath);
-                    let oldpath = data.oldfilepath;
-                    // println!("{:?}", oldpath);
-                    data.archive.finish();
-                    fs::remove_file(&oldpath).unwrap();
-                    fs::rename(&outpath, &oldpath).unwrap();
+                    let context = data.getpath();
+                    if let Err(err) =  data.save() {
+                        err_vec.push(err.to_user(context));
+                    }
                 }
                 OutMessage::ComputeEnd => {
                     break
@@ -295,7 +228,7 @@ fn iterate_over_archives(docs: Vec<String>,
             }
         }
     };
-
+err_vec
 }
 
 fn main() -> () {
@@ -303,27 +236,35 @@ fn main() -> () {
     // let start_time = Instant::now();
 
 
-    let filter_vec = vec![OsStr::new("docx"),OsStr::new("xlsx")];
+    let filter_vec = vec![OsStr::new("docx"),OsStr::new("xlsx"),OsStr::new("pdf")];
+    let filter_set: HashSet<_> = filter_vec.iter().cloned().collect();
 
-    let (oks, errs): (Vec<_>, Vec<_>) = WalkDir::new("C:\\Users\\stp\\ferrprojs\\test0")
+    let (oks, errs): (Vec<_>, Vec<_>) = WalkDir::new("C:\\$Recycle.Bin")
         .into_iter()
-        .filter_map(Result::ok)
-        .map(|path| is_in(&path, &filter_vec))
-        .partition(Result::is_ok);
+        .partition(|path|path.is_ok());
 
-    let filtered: Vec<String> = oks.into_iter()
-        .filter_map(|result| result.ok()) // Extract the `Ok` values
-        .flatten() // Flatten the `Vec<Option<String>>` into a `Vec<String>`
+
+    let filtered:Vec<String> = oks
+        .iter()
+        .filter_map(|path| is_in(path.as_ref().unwrap(), &filter_vec))
+        .collect();
+
+    let mut errs: Vec<UISideErr> = errs
+        .into_iter()
+        .map(|err| PurgeErr::from(err.unwrap_err()).to_user("".to_string()))
         .collect();
 
     // println!("{:?}", errs.into_iter());
     // println!("{:?}", &filtered);
     if filtered.len() == 0 {
+        for err in errs {
+            println!("{}", err.ui_show());
+        }
         return;
     }
 
-    let input_len_for_io = filtered.len();
-    let input_len_for_compute = input_len_for_io.clone();
+    // let input_len_for_io = filtered.len();
+    // let input_len_for_compute = input_len_for_io.clone();
 
 
     let (itx, irx) = channel();
@@ -340,12 +281,13 @@ fn main() -> () {
     let io_thread = thread::spawn(move || {
         let (lock, cvar) = &*pair;
 
-        iterate_over_archives(filtered, deflate, itx, irx_arc_io, otx_io, orx, lock, cvar);
+        iterate_over_archives(filtered, deflate, itx, irx_arc_io, otx_io, orx, lock, cvar)
 
         });
 
 
     let compute_thread = thread::spawn(move || {
+        let mut err_vec: Vec<UISideErr> = vec![];
         let (lock, cvar) = &*pair2;
         thread::sleep(Duration::new(0, 50*100));
         loop {
@@ -355,10 +297,14 @@ fn main() -> () {
                     match message {
                         InMessage::Data(data) => {
                             drop(irx_locked);
-                            if let Ok(edited_data) = MTUnitOut::new(data, deflate) {
-                                otx.send(OutMessage::Data(edited_data));
-                            } else {
-                                panic!("for some reason creating MTUnitOut in the compute thread failed!");
+                            let context = data.getpath();
+                            match  data.process() {
+                                Ok(edited_data) =>  {
+                                    if let Err(err ) = otx.send(OutMessage::Data(edited_data)) {
+                                        err_vec.push(PurgeErr::from(err).to_user(context))
+                                    }
+                                },
+                                Err(err) => err_vec.push(PurgeErr::from(err).to_user(context))
                             }
                         },
                         InMessage::ComputeEnd => {
@@ -388,10 +334,14 @@ fn main() -> () {
             };
 
         }
-
+    err_vec
     });
-    io_thread.join().unwrap();
-    compute_thread.join().unwrap();
+    errs.extend(io_thread.join().unwrap());
+    errs.extend(compute_thread.join().unwrap());
+
+    for err in errs {
+        println!("{}", err.ui_show());
+    }
 }
 
 
