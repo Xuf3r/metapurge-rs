@@ -9,6 +9,7 @@ mod traits;
 mod errors;
 mod exif;
 mod dyn_png;
+mod jpeg;
 
 
 use std::ffi::OsStr;

@@ -98,21 +98,21 @@ fn get_ancil_ranges(src: &Vec<u8>) -> Result<Vec<Range>,String> {
 }
 
 
-struct Png {
+pub(crate) struct Png {
     paths: DataPaths,
     data: Vec<u8>
 }
 
 impl Png {
-    fn new(paths: DataPaths) -> Png {
-        Png {
+    pub(crate) fn new(paths: DataPaths) -> Box<Self> {
+        Box::from(Png {
             paths: paths,
             data: Vec::new()
-        }
+        })
     }
 }
 impl Purgable for Png {
-    fn load(mut self) -> Result<Self, PurgeErr> {
+    fn load(mut self: Box<Self>) -> Result<Box<Self>, PurgeErr> {
 
         let mut file = fs::File::open(self.paths.old())?;
         file.read_to_end(&mut self.data)?;
@@ -123,7 +123,7 @@ impl Purgable for Png {
 
 
 
-    fn process(mut self) -> Result<Self, PurgeErr> {
+    fn process(mut self: Box<Self>) -> Result<Box<Self>, PurgeErr> {
 
         let ancil_ranges = get_ancil_ranges(&self.data)?;
         self.data = dont_take_ranges(&self.data, ancil_ranges);
@@ -131,7 +131,7 @@ impl Purgable for Png {
         Ok(self)
     }
 
-    fn save(mut self) -> Result<(), PurgeErr> {
+    fn save(mut self: Box<Self>) -> Result<(), PurgeErr> {
         self.data.save(&self.paths.temp())?;
         // if let Err(hr) = std::fs::remove_file(&self.paths.old()) {
         //     std::fs::remove_file(&self.paths.temp());

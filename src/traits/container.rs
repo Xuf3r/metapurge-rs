@@ -12,7 +12,8 @@ use crate::traits::container::PdfPipe::*;
 use crate::traits::load_process_write::{LoadFs, Process, Finalize, Getpath};
 use crate::exif::*;
 use crate::traits::container::ExifPipe::{ExifDataVar, ExifFinalVar, ExifPathVar};
-
+use crate::dyn_png::Png;
+use crate::jpeg::Jpg;
 // const SUPPORTED_EXT: [&str; 2] = ["docx", "xlsx"];
 
 
@@ -205,11 +206,10 @@ match &self {
 }
 
 pub(crate) trait Purgable {
-    fn load(self) -> Result<Box<dyn Purgable>, PurgeErr>;
-    fn process(self) -> Result<Box<dyn Purgable>, PurgeErr>;
-    fn save(self) -> Result<(), PurgeErr>;
-
-    fn file_name(&self) -> String;
+    fn load(mut self: Box<Self>) -> Result<Box<Self>, PurgeErr>;
+    fn process(mut self: Box<Self>) -> Result<Box<Self>, PurgeErr>;
+    fn save(mut self: Box<Self>) -> Result<(), PurgeErr>;
+    fn file_name(self: Box<Self>) -> String;
 }
 
 
