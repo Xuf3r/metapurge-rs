@@ -13,6 +13,7 @@ lazy_static = "1.4.0"
 lopdf = { version = "0.32.0", features = ["pom_parser"] }
 xmp_toolkit = "1.7.2"
 native-dialog = "0.7.0"
+little_exif_panic = {  git = "https://github.com/Xuf3r/little_exif-panic", branch = "main" }
 [[bin]]
 name = "test0"
 path = "src/main.rs"

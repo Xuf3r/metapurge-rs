@@ -1,11 +1,31 @@
 use std::error::Error;
-use std::fmt::{Display, Formatter};
-use std::io;
+use std::fmt::{Debug, Display, Formatter};
+use std::{fmt, io};
 use std::str::Utf8Error;
 use std::sync::mpsc::SendError;
 use xmp_toolkit::{XmpError, XmpErrorType};
 use zip::result::ZipError;
 use crate::OutMessage;
+
+
+#[derive(Debug, Clone)]
+pub(crate) struct ExifStructureErr {
+    info: String
+}
+
+
+
+impl Error for ExifStructureErr {}
+impl fmt::Display for ExifStructureErr {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "mangled metadata encountered, can't process")
+    }
+}
+impl ExifStructureErr {
+    pub(crate) fn new(info: &str) -> ExifStructureErr {
+        ExifStructureErr {info: info.parse().unwrap() }
+    }
+}
 
 
 
@@ -89,6 +109,11 @@ impl ToUISideErr for walkdir::Error {
         UISideErr{path: self.path().unwrap().to_str().unwrap().to_string() , info: self.source().unwrap().to_string() }
     }
 }
+impl ToUISideErr for ExifStructureErr {
+    fn to_user(&self, context: String) -> UISideErr {
+        UISideErr{path: context , info: self.info.clone() }
+    }
+}
 
 #[derive(Debug)]
 pub(crate) enum PurgeErr {
@@ -98,7 +123,8 @@ pub(crate) enum PurgeErr {
     LopdfError(lopdf::Error),
     UTF8Error(Utf8Error),
     SendErrOut(SendError<OutMessage>),
-    DirError(walkdir::Error)
+    DirError(walkdir::Error),
+    ExifError(ExifStructureErr)
 }
 
 
@@ -145,6 +171,12 @@ impl From<walkdir::Error> for PurgeErr {
     }
 }
 
+impl From<ExifStructureErr> for PurgeErr {
+    fn from(error: ExifStructureErr) -> Self {
+        PurgeErr::ExifError(error)
+    }
+}
+
 ///
 
 pub trait ToUser<T> {
@@ -161,6 +193,7 @@ impl ToUser<UISideErr> for PurgeErr {
             PurgeErr::UTF8Error(e) => e.to_user(context),
             PurgeErr::SendErrOut(e) => e.to_user(context),
             PurgeErr::DirError(e) => e.to_user(context),
+            PurgeErr::ExifError(e) => {e.to_user(context)}
         }
     }
 }
