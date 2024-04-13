@@ -8,9 +8,9 @@ mod dyn_png;
 mod jpeg;
 
 
-use std::ffi::OsStr;
 
-use std::{thread};
+
+use std::{env, thread};
 
 use std::io::{BufRead, Read, Write};
 use std::ops::Deref;
@@ -21,7 +21,6 @@ use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::time::{Duration};
 use crate::mso_x::mso_x_core_xml_templates::*; // this doesn't seem to be used at all
 use regex::Regex;
-use zip::write::FileOptions;
 
 use lazy_static::lazy_static;
 use crate::errors::error::{PurgeErr, ToUser, UISideErr};
@@ -222,18 +221,13 @@ err_vec
 }
 
 fn main() -> () {
-    let deflate = FileOptions::default();
 
+    let path = env::args().nth(1).unwrap_or_else(|| {
+        println!("Usage: {} <directory>", env::args().next().unwrap());
+        std::process::exit(1);
+    });
 
-
-
-
-    // let path = env::args().nth(1).unwrap_or_else(|| {
-    //     println!("Usage: {} <directory>", env::args().next().unwrap());
-    //     std::process::exit(1);
-    // });
-
-    let (oks, errs): (Vec<_>, Vec<_>) = WalkDir::new("C:\\ferrprojs\\metapurge-rs")
+    let (oks, errs): (Vec<_>, Vec<_>) = WalkDir::new(path)
         .into_iter()
         .partition(|path|path.is_ok());
 
