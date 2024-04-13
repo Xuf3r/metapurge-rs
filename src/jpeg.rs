@@ -1,5 +1,6 @@
 use std::fs;
-use std::io::Read;
+use std::fs::File;
+use std::io::{Read, Write};
 use crate::errors::error::PurgeErr;
 use crate::traits::container::{DataPaths, Purgable};
 
@@ -219,7 +220,20 @@ impl Jpg {
     }
 
     pub(crate)  fn save(self) -> Result<(), PurgeErr> {
-        todo!()
+        let mut temp = File::create(self.paths.temp())?;
+        temp.write_all(self.data.as_slice())?;
+        // if let Err(hr) = std::fs::remove_file(&self.paths.old()) {
+        //     std::fs::remove_file(&self.paths.temp());
+        //     return Err(PurgeErr::from(hr))
+        // };
+        // rename() already removes the file.
+
+        if let Err(hr) = std::fs::rename(&self.paths.temp(), &self.paths.old()) {
+            std::fs::remove_file(&self.paths.temp());
+            //     return Err(PurgeErr::from(hr))
+        }
+        // We still have to remove the temp it remove() fails
+        Ok(())
     }
 
     pub(crate) fn file_name(&self) -> String {
