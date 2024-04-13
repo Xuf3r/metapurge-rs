@@ -201,8 +201,8 @@ impl Jpg {
     }
 }
 
-impl Purgable for Jpg {
-    fn load(mut self: Box<Self>) -> Result<Box<Self>, PurgeErr> {
+impl Jpg {
+    pub(crate) fn load(mut self: Box<Self>) -> Result<Box<Self>, PurgeErr> {
         let mut file = fs::File::open(self.paths.old())?;
     file.read_to_end(&mut self.data)?;
 
@@ -211,18 +211,18 @@ impl Purgable for Jpg {
 
     }
 
-    fn process(mut self: Box<Self>) -> Result<Box<Self>, PurgeErr> {
+    pub(crate)  fn process(mut self: Box<Self>) -> Result<Box<Self>, PurgeErr> {
         let ranges = get_app_ranges(&self.data);
         self.data = dont_take_ranges(&self.data, ranges);
 
         Ok(self)
     }
 
-    fn save(self) -> Result<(), PurgeErr> {
+    pub(crate)  fn save(self) -> Result<(), PurgeErr> {
         todo!()
     }
 
-    fn file_name(&self) -> String {
+    pub(crate) fn file_name(&self) -> String {
         self.paths.old_owned()
     }
 }

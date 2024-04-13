@@ -1,13 +1,9 @@
 
 extern crate core;
-
-
-
 mod pdf;
 mod mso_x;
 mod traits;
 mod errors;
-mod exif;
 mod dyn_png;
 mod jpeg;
 
@@ -29,10 +25,9 @@ use zip::write::FileOptions;
 
 use lazy_static::lazy_static;
 use crate::errors::error::{PurgeErr, ToUser, UISideErr};
-use crate::traits::load_process_write::LoadFs;
 
-use crate::traits::container::{DataPaths, Purgable};
-use native_dialog::{MessageDialog, MessageType};
+use crate::traits::container::{DataPaths, DocumentType, Purgable};
+use native_dialog::{MessageDialog,};
 
 fn echo(name: &str) {
     MessageDialog::new()
@@ -64,30 +59,14 @@ const TARGET: &[u8] = br#"<Relationship Id="rId4" Type="http://schemas.openxmlfo
 const REPLACEMENT: &[u8; 16] = br#"</Relationships>"#;
 
 enum OutMessage {
-    Data(Box<dyn Purgable>),
+    Data(DocumentType),
     ComputeEnd
 }
 
 enum InMessage {
-    Data(Box<dyn Purgable>),
+    Data(DocumentType),
     ComputeEnd,
 }
-fn is_in(item: &DirEntry, filter: &Vec<&OsStr>) -> Option<String> {
-
-    // let binding = item;
-    let extension = item.path().extension();
-    if extension.is_none() {
-        None
-    }
-    else if filter.contains(&extension.unwrap()) {
-        Some(item.path().to_string_lossy().into_owned())
-    }
-    else {
-        None
-    }
-
-}
-
 
 fn replace_corexml(data: &str) -> String {
 
@@ -112,7 +91,7 @@ fn remove_rells(mut data: Vec<u8>, index: usize) -> Vec<u8> {
 }
 
 
-fn iterate_over_stubs(docs: Vec<Box<dyn Purgable>>,
+fn iterate_over_stubs(docs: Vec<DocumentType>,
                          itx: Sender<InMessage>,
                          irx: Arc<Mutex<Receiver<InMessage>>>,
                          otx: Sender<OutMessage>,
@@ -254,14 +233,14 @@ fn main() -> () {
     //     std::process::exit(1);
     // });
 
-    let (oks, errs): (Vec<_>, Vec<_>) = WalkDir::new("C:\\Users\\stp\\ferrprojs\\test0")
+    let (oks, errs): (Vec<_>, Vec<_>) = WalkDir::new("C:\\ferrprojs\\metapurge-rs")
         .into_iter()
         .partition(|path|path.is_ok());
 
 
     let paths: Vec<DirEntry> = oks.into_iter().map(Result::unwrap).collect();
 
-    let dirty_stubs: Vec<Box<dyn Purgable>> = paths.into_iter()
+    let dirty_stubs: Vec<DocumentType> = paths.into_iter()
         .filter(|path| DataPaths::is_supported(path))
         .map(DataPaths::new)
         .map(DataPaths::instantiate)
@@ -315,7 +294,7 @@ fn main() -> () {
                     match message {
                         InMessage::Data(data) => {
                             drop(irx_locked);
-                            let context = data.getpath();
+                            let context = data.file_name();
                             match  data.process() {
                                 Ok(edited_data) =>  {
                                     if let Err(err ) = otx.send(OutMessage::Data(edited_data)) {

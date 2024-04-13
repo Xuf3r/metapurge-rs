@@ -3,7 +3,6 @@ use std::ffi::OsString;
 use std::fs::File;
 use std::{fs, io};
 use std::io::{Read, Write};
-use lopdf::Reader;
 
 use crate::errors::error::PurgeErr;
 
@@ -12,80 +11,53 @@ use zip::write::FileOptions;
 use crate::{find_rells, remove_rells, replace_corexml};
 use crate::mso_x::mso_x_file_name_consts;
 
-use crate::traits::load_process_write::*;
 
 use lazy_static::lazy_static;
-use crate::pdf::PdfPath;
-use crate::traits::container::{Container, MsoXPipe};
-use crate::traits::container::MsoXPipe::{MsoXFinalVar, MsoXPathVar};
+use crate::traits::container::{DataPaths, Purgable};
 
 
 lazy_static! {
     static ref DEFLATE_OPTION: FileOptions = FileOptions::default();
 }
-pub(crate) struct MsoXPath {
-    old_path: OsString,
-    temp_path: OsString
+
+enum rw_MsOX {
+    Stub,
+    Archive(ZipArchive<File>),
+    Writer(ZipWriter<File>)
 }
-pub(crate) struct MsoXData {
-    src: Box<ZipArchive<File>>,
-    dst: File,
-    paths: MsoXPath,
-}
-pub(crate) struct MsoXFinal {
-    finaldata: Box<ZipWriter<File>>,
-    paths: MsoXPath
+pub(crate) struct MsOX {
+    paths: DataPaths,
+    data: rw_MsOX
 }
 
-impl Getpath for MsoXPath{
-    fn getpath(&self) -> String {
-        self.old_path.clone().into_string().unwrap()
-    }
-}
-impl Getpath for MsoXData{
-    fn getpath(&self) -> String {
-        self.paths.old_path.clone().into_string().unwrap()
-    }
-}
-impl Getpath for MsoXFinal{
-    fn getpath(&self) -> String {
-        self.paths.old_path.clone().into_string().unwrap()
-    }
-}
-impl MsoXPath {
-    pub(crate) fn new(path: &str) -> MsoXPath {
-        MsoXPath {
-            old_path: OsString::from(path),
-            temp_path: OsString::new()
-        }
-    }
-}
-impl LoadFs for MsoXPath {
-    fn load(mut self) -> Result<Container, PurgeErr> {
-        let file = File::open(&self.old_path)?;
-        let archive = Box::new(ZipArchive::new(file)?);
-
-        let mut temp = OsString::from(&self.old_path);
-
-        temp.push("_temp");
-        self.temp_path = temp;
-
-        let outfile = File::create(&self.temp_path)?;
-
-        Ok(
-            Container::MsoXPipe(MsoXPipe::MsoXDataVar(MsoXData { src: archive, dst: outfile, paths: self }))
-        )
+impl MsOX {
+    pub(crate) fn new(paths: DataPaths) -> Box<Self> {
+        Box::from(MsOX {
+            paths: paths,
+            data: rw_MsOX::Stub
+        })
     }
 }
 
-impl Process for MsoXData {
-    fn process(mut self) -> Result<Container, PurgeErr> {
-        let outfile = self.dst;
-        let mut zipout_heap = Box::new(ZipWriter::new(outfile));
-        let mut zipout = &mut *zipout_heap;
+impl MsOX {
+    pub(crate) fn load(mut self: Box<Self>) -> Result<Box<Self>, PurgeErr> {
+        let file = File::open(self.paths.old())?;
+        self.data = rw_MsOX::Archive(ZipArchive::new(file)?);
 
-        for i in 0..self.src.len() {
-            let mut file = self.src.by_index(i)?;
+        Ok(self)
+    }
+
+    pub(crate)  fn process(mut self: Box<Self>) -> Result<Box<Self>, PurgeErr> {
+        let file = File::create(self.paths.temp())?;
+        let mut zipout = ZipWriter::new(file);
+
+        let mut archive = match self.data {
+            rw_MsOX::Stub => {unreachable!("It can't happen.")},
+            rw_MsOX::Archive(archive) => {archive}
+            rw_MsOX::Writer(_) => {unreachable!("It can't happen.")}
+        };
+        for i in 0..archive.len() {
+            let mut file = archive.by_index(i)?;
             let outpath = match file.enclosed_name() {
                 Some(path) => path
                     .to_str()
@@ -97,7 +69,7 @@ impl Process for MsoXData {
 
             match outpath.as_str() {
                 to_edit @ mso_x_file_name_consts::CORE_XML => {
-                    let read_result = file.by_ref().read_to_end(&mut content)?;
+                    file.by_ref().read_to_end(&mut content)?;
                     let corexml = std::str::from_utf8(&content)?;
                     let replxml = replace_corexml(corexml);
                     zipout.start_file(to_edit, *DEFLATE_OPTION)?;
@@ -112,34 +84,41 @@ impl Process for MsoXData {
                         zipout.write_all(&rels);
                     } else {
                         zipout.start_file(to_edit, *DEFLATE_OPTION)?;
-                        zipout.write_all(content.as_slice());
+                        zipout.write_all(content.as_slice())?;
                     }
                 }
                 mso_x_file_name_consts::CUSTOM_XML => continue,
+
                 no_edit => {
                     // file.read_to_end(&mut content).unwrap();
                     zipout.start_file(no_edit, *DEFLATE_OPTION)?;
                     // zipout.write_all(content.as_slice()).unwrap();
-                    io::copy(&mut file, &mut zipout);
+                    io::copy(&mut file, &mut zipout)?;
                 }
-            }
+            };
 
-        }
-        
-        Ok(
-            Container::MsoXPipe(MsoXFinalVar(MsoXFinal { finaldata: zipout_heap, paths: self.paths }))
-        )
+        };
+
+        self.data = rw_MsOX::Writer(zipout);
+        Ok(self)
     }
-}
 
-impl Finalize for MsoXFinal {
-    fn save(mut self) -> Result<(), PurgeErr> {
+    pub(crate)  fn save(self: Box<Self>) -> Result<(), PurgeErr> {
+        let mut archive = match self.data {
+            rw_MsOX::Stub => {unreachable!("Can't happen.")},
+            rw_MsOX::Archive(_) => {unreachable!("Can't happen.")},
+            rw_MsOX::Writer(archive) => {archive}
+        };
+        archive.finish()?;
+        if let Err(e) = fs::rename(&self.paths.temp(), &self.paths.old()) {
+            fs::remove_file(&self.paths.old())?;
+        }
 
-
-    self.finaldata.finish()?;
-        fs::remove_file(&self.paths.old_path)?;
-        fs::rename(&self.paths.temp_path, &self.paths.old_path)?;
         Ok(())
 
+    }
+
+    pub(crate)  fn file_name(&self) -> String {
+        self.paths.old_owned()
     }
 }

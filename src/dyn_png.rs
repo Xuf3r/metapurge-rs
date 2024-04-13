@@ -1,7 +1,8 @@
 use std::ffi::OsString;
 use std::fs;
-use std::io::Read;
-use crate::errors::error::PurgeErr;
+use std::fs::File;
+use std::io::{Read, Write};
+use crate::errors::error::{ExifStructureErr, PurgeErr};
 use crate::traits::container::{DataPaths, Purgable};
 
 
@@ -48,19 +49,19 @@ fn dont_take_ranges(src: &Vec<u8>, ranges: Vec<Range>) -> Vec<u8> {
     clean_buf
 }
 
-fn get_ancil_ranges(src: &Vec<u8>) -> Result<Vec<Range>,String> {
+fn get_ancil_ranges(src: &Vec<u8>) -> Result<Vec<Range>,PurgeErr> {
 
     let mut anxil_ranges: Vec<Range> = Vec::new();
     if let Some(data) = src.get(..=7) {
         if data != [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A] {
-            return unimplemented!("which error?")
+            return Err(PurgeErr::from(ExifStructureErr::new("not png")))
         }
     }
 
     let mut vec_iter = src.windows(8).enumerate();
 
     if let None =  vec_iter.nth(8) {
-        return unimplemented!("which error?")
+        return Err(PurgeErr::from(ExifStructureErr::new("empty png")))
     }
 
     while let Some((index, bytes)) = vec_iter.next() {
@@ -111,8 +112,8 @@ impl Png {
         })
     }
 }
-impl Purgable for Png {
-    fn load(mut self: Box<Self>) -> Result<Box<Self>, PurgeErr> {
+impl Png {
+    pub(crate)  fn load(mut self: Box<Self>) -> Result<Box<Self>, PurgeErr> {
 
         let mut file = fs::File::open(self.paths.old())?;
         file.read_to_end(&mut self.data)?;
@@ -123,7 +124,7 @@ impl Purgable for Png {
 
 
 
-    fn process(mut self: Box<Self>) -> Result<Box<Self>, PurgeErr> {
+    pub(crate) fn process(mut self: Box<Self>) -> Result<Box<Self>, PurgeErr> {
 
         let ancil_ranges = get_ancil_ranges(&self.data)?;
         self.data = dont_take_ranges(&self.data, ancil_ranges);
@@ -131,8 +132,10 @@ impl Purgable for Png {
         Ok(self)
     }
 
-    fn save(mut self: Box<Self>) -> Result<(), PurgeErr> {
-        self.data.save(&self.paths.temp())?;
+    pub(crate) fn save(mut self: Box<Self>) -> Result<(), PurgeErr> {
+
+        let mut temp = File::create(self.paths.temp())?;
+        temp.write_all(self.data.as_slice())?;
         // if let Err(hr) = std::fs::remove_file(&self.paths.old()) {
         //     std::fs::remove_file(&self.paths.temp());
         //     return Err(PurgeErr::from(hr))
@@ -147,7 +150,7 @@ impl Purgable for Png {
         Ok(())
     }
 
-    fn file_name(&self) -> String {
+    pub(crate)  fn file_name(&self) -> String {
         self.paths.old_owned()
     }
 }

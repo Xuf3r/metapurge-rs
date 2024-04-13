@@ -14,18 +14,20 @@ pub(crate) struct ExifStructureErr {
 }
 
 
-
+impl ExifStructureErr {
+    pub(crate) fn new(info: &str) -> ExifStructureErr{
+        ExifStructureErr {
+            info: info.to_string()
+        }
+    }
+}
 impl Error for ExifStructureErr {}
 impl fmt::Display for ExifStructureErr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "mangled metadata encountered, can't process")
     }
 }
-impl ExifStructureErr {
-    pub(crate) fn new(info: &str) -> ExifStructureErr {
-        ExifStructureErr {info: info.parse().unwrap() }
-    }
-}
+
 
 
 
