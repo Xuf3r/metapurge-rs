@@ -1,40 +1,33 @@
-#![feature(slice_pattern)]
-#![feature(const_trait_impl)]
+
 extern crate core;
-
-use mso_x::mso_x_core_xml_templates; // it doesn't seem to be used at all
-
-
 mod pdf;
 mod mso_x;
 mod traits;
 mod errors;
+mod dyn_png;
+mod jpeg;
 
-use core::slice::SlicePattern;
+
 use std::ffi::OsStr;
-use std::fmt::Error;
-use std::{env, fs, io, ptr, thread};
-use std::collections::HashSet;
-use std::fs::File;
-use std::io::{BufRead, Cursor, Read, SeekFrom, Write};
+
+use std::{thread};
+
+use std::io::{BufRead, Read, Write};
 use std::ops::Deref;
 use walkdir::{DirEntry, WalkDir};
-use std::path::{Path, PathBuf};
-use std::str::from_utf8;
+
 use std::sync::{Arc, Mutex, Condvar};
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
-use std::time::{Duration, Instant};
-use crate::mso_x_core_xml_templates::*; // this doesn't seem to be used at all
+use std::time::{Duration};
+use crate::mso_x::mso_x_core_xml_templates::*; // this doesn't seem to be used at all
 use regex::Regex;
 use zip::write::FileOptions;
-use zip::{CompressionMethod, ZipArchive, ZipWriter};
+
 use lazy_static::lazy_static;
 use crate::errors::error::{PurgeErr, ToUser, UISideErr};
-use crate::traits::load_process_write::LoadFs;
-use crate::traits::container;
-use crate::traits::container::Container as Cont;
-use native_dialog::{MessageDialog, MessageType};
 
+use crate::traits::container::{DataPaths, DocumentType, Purgable};
+use native_dialog::{MessageDialog,};
 
 fn echo(name: &str) {
     MessageDialog::new()
@@ -66,30 +59,14 @@ const TARGET: &[u8] = br#"<Relationship Id="rId4" Type="http://schemas.openxmlfo
 const REPLACEMENT: &[u8; 16] = br#"</Relationships>"#;
 
 enum OutMessage {
-    Data(Cont),
+    Data(DocumentType),
     ComputeEnd
 }
 
 enum InMessage {
-    Data(Cont),
+    Data(DocumentType),
     ComputeEnd,
 }
-fn is_in(item: &DirEntry, filter: &Vec<&OsStr>) -> Option<String> {
-
-    // let binding = item;
-    let extension = item.path().extension();
-    if extension.is_none() {
-        None
-    }
-    else if filter.contains(&extension.unwrap()) {
-        Some(item.path().to_string_lossy().into_owned())
-    }
-    else {
-        None
-    }
-
-}
-
 
 fn replace_corexml(data: &str) -> String {
 
@@ -114,8 +91,7 @@ fn remove_rells(mut data: Vec<u8>, index: usize) -> Vec<u8> {
 }
 
 
-fn iterate_over_archives(docs: Vec<String>,
-                         algo: FileOptions,
+fn iterate_over_stubs(docs: Vec<DocumentType>,
                          itx: Sender<InMessage>,
                          irx: Arc<Mutex<Receiver<InMessage>>>,
                          otx: Sender<OutMessage>,
@@ -125,24 +101,20 @@ fn iterate_over_archives(docs: Vec<String>,
     let mut err_vec:Vec<UISideErr> = vec![];
     let mut started = lock.lock().unwrap();
 
-    for file_name in docs
+    for stub in docs
     {
-        if let Some(cont) = Cont::new(&file_name) {
-            match cont.load() {
+            let context = stub.file_name();
+            match stub.load() {
                 Ok(loaded) => {
 
                     itx.send(InMessage::Data(loaded));
                 },
                 Err(err) => {
-                    err_vec.push(err.to_user(file_name.clone()));
+                    err_vec.push(err.to_user(context));
                     continue
                 },
-            }
-        }
-        else {
-            println!("?? how exactly did not supported extension snuck up in here? it's:" );
-            continue
-        };
+            };
+
     };
     itx.send(InMessage::ComputeEnd);
     itx.send(InMessage::ComputeEnd);
@@ -165,7 +137,7 @@ fn iterate_over_archives(docs: Vec<String>,
                 match message {
                     InMessage::Data(data) => {
                         drop(irx_locked);
-                        let context = data.getpath();
+                        let context = data.file_name();
                          match data.process() {
                             Ok(content) => {
 
@@ -204,7 +176,7 @@ fn iterate_over_archives(docs: Vec<String>,
         if let Ok(message) = orx.try_recv() {
             match message {
                 OutMessage::Data(mut data) => {
-                    let context = data.getpath();
+                    let context = data.file_name();
                    if let Err(err) =  data.save() {
                        err_vec.push(err.to_user(context));
                    }
@@ -226,7 +198,7 @@ fn iterate_over_archives(docs: Vec<String>,
 
     cvar.notify_one(); // Notify one waiting thread
 
-    drop(started);
+    drop(started); // Drop the lock
 
 
     loop {
@@ -234,7 +206,7 @@ fn iterate_over_archives(docs: Vec<String>,
 
             match message {
                 OutMessage::Data(mut data) => {
-                    let context = data.getpath();
+                    let context = data.file_name();
                     if let Err(err) =  data.save() {
                         err_vec.push(err.to_user(context));
                     }
@@ -245,30 +217,33 @@ fn iterate_over_archives(docs: Vec<String>,
             }
         }
     };
+
 err_vec
 }
 
 fn main() -> () {
     let deflate = FileOptions::default();
-    // let start_time = Instant::now();
 
 
-    let filter_vec = vec![OsStr::new("docx"),OsStr::new("xlsx"),OsStr::new("pdf")];
-    let filter_set: HashSet<_> = filter_vec.iter().cloned().collect();
 
-    let path = env::args().nth(1).unwrap_or_else(|| {
-        println!("Usage: {} <directory>", env::args().next().unwrap());
-        std::process::exit(1);
-    });
 
-    let (oks, errs): (Vec<_>, Vec<_>) = WalkDir::new(path)
+
+    // let path = env::args().nth(1).unwrap_or_else(|| {
+    //     println!("Usage: {} <directory>", env::args().next().unwrap());
+    //     std::process::exit(1);
+    // });
+
+    let (oks, errs): (Vec<_>, Vec<_>) = WalkDir::new("C:\\ferrprojs\\metapurge-rs")
         .into_iter()
         .partition(|path|path.is_ok());
 
 
-    let filtered:Vec<String> = oks
-        .iter()
-        .filter_map(|path| is_in(path.as_ref().unwrap(), &filter_vec))
+    let paths: Vec<DirEntry> = oks.into_iter().map(Result::unwrap).collect();
+
+    let dirty_stubs: Vec<DocumentType> = paths.into_iter()
+        .filter(|path| DataPaths::is_supported(path))
+        .map(DataPaths::new)
+        .map(DataPaths::instantiate)
         .collect();
 
     let mut errs: Vec<UISideErr> = errs
@@ -278,12 +253,10 @@ fn main() -> () {
 
     // println!("{:?}", errs.into_iter());
     // println!("{:?}", &filtered);
-    if filtered.len() == 0 {
+    if dirty_stubs.len() == 0 {
         let errs = errs.into_iter().map( |item| item.ui_show()).collect::<Vec<String>>().join("\n");
 
         echo(&errs);
-
-
         return;
     }
 
@@ -305,7 +278,7 @@ fn main() -> () {
     let io_thread = thread::spawn(move || {
         let (lock, cvar) = &*pair;
 
-        iterate_over_archives(filtered, deflate, itx, irx_arc_io, otx_io, orx, lock, cvar)
+        iterate_over_stubs(dirty_stubs, itx, irx_arc_io, otx_io, orx, lock, cvar)
 
         });
 
@@ -321,7 +294,7 @@ fn main() -> () {
                     match message {
                         InMessage::Data(data) => {
                             drop(irx_locked);
-                            let context = data.getpath();
+                            let context = data.file_name();
                             match  data.process() {
                                 Ok(edited_data) =>  {
                                     if let Err(err ) = otx.send(OutMessage::Data(edited_data)) {
@@ -344,22 +317,19 @@ fn main() -> () {
 
 
                             otx.send(OutMessage::ComputeEnd);
-                             //probably can drop earlier
-                            // since input queue is empty or drop implicitly but whatever
+
                             break
                         },
                     }
                 },
-                Err(_) => {
-                    println!("in compute thread - probably itx closed");
-                    break// it's not possible for the itx to not exist when compute thread is alive
-                    // this branch is supposed to be unreachable
-                },
+                Err(_) => unreachable!("'itx' is guaranteed to be open while compute_thread is active"),
             };
 
         }
     err_vec
     });
+
+
     errs.extend(io_thread.join().unwrap());
     errs.extend(compute_thread.join().unwrap());
 
