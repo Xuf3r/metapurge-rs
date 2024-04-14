@@ -49,14 +49,14 @@ impl<T: Heaped + Sized> DataBox<T> {
 }
 
 impl Purgable for DataBox<Png> {
-    fn load(mut self: Box<Self>) -> Result<Box<Box<dyn Purgable>>, PurgeErr> {
+    fn load(mut self: Box<Self>) -> Result<Box<dyn Purgable>, PurgeErr> {
         self.data.load();
-        Ok(Box::new(self))
+        Ok(self as Box<dyn Purgable>)
     }
 
-    fn process(mut self: Box<Self>) -> Result<Box<Box<dyn Purgable>>, PurgeErr> {
+    fn process(mut self: Box<Self>) -> Result<Box<dyn Purgable>, PurgeErr> {
         self.data.process();
-        Ok(Box::new(self))
+        Ok(self as Box<dyn Purgable>)
     }
 
     fn save(mut self: Box<Self>) -> Result<(), PurgeErr> {
@@ -130,8 +130,8 @@ impl DataPaths {
 
 
 pub(crate) trait Purgable: Send {
-    fn load(self: Box<Self>) -> Result<Box<Box<dyn Purgable>>, PurgeErr>;
-    fn process(self: Box<Self>) -> Result<Box<Box<dyn Purgable>>, PurgeErr>;
+    fn load(self: Box<Self>) -> Result<Box<dyn Purgable>, PurgeErr>;
+    fn process(self: Box<Self>) -> Result<Box<dyn Purgable>, PurgeErr>;
     fn save(self: Box<Self>) -> Result<(), PurgeErr>;
 
     fn file_name(&self) -> String;

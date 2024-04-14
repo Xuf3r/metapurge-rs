@@ -58,12 +58,12 @@ const TARGET: &[u8] = br#"<Relationship Id="rId4" Type="http://schemas.openxmlfo
 const REPLACEMENT: &[u8; 16] = br#"</Relationships>"#;
 
 enum OutMessage {
-    Data(Box<Box<dyn Purgable>>),
+    Data(Box<dyn Purgable>),
     ComputeEnd
 }
 
 enum InMessage {
-    Data(Box<Box<dyn Purgable>>),
+    Data(Box<dyn Purgable>),
     ComputeEnd,
 }
 
