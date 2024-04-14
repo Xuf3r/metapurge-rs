@@ -10,7 +10,7 @@ use std::str::{from_utf8, FromStr};
 use xmp_toolkit::{ToStringOptions, XmpError, XmpMeta, XmpValue};
 use crate::errors::error::PurgeErr;
 
-use crate::traits::container::{DataPaths,Purgable};
+use crate::traits::container::{DataPaths, Heaped, Purgable};
 
 const ELEMENTS_TO_CLEAN: [(&str, &str); 4] = [
     ("http://purl.org/dc/elements/1.1/", "dc:title[1]" ),
@@ -46,6 +46,12 @@ pub(crate) struct Pdf {
     paths: DataPaths,
     data: state_Doc
 }
+impl Heaped for Pdf{
+    fn inner_file_name(&self) -> String {
+        self.paths.old_owned()
+    }
+}
+
 impl Pdf {
     pub(crate) fn new(paths: DataPaths) -> Box<Self> {
         Box::from(Pdf {

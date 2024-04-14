@@ -100,9 +100,10 @@ fn get_ancil_ranges(src: &Vec<u8>) -> Result<Vec<Range>,PurgeErr> {
 
 
 pub(crate) struct Png {
-    paths: DataPaths,
+    pub(crate) paths: DataPaths,
     data: Vec<u8>
 }
+
 
 impl Png {
     pub(crate) fn new(paths: DataPaths) -> Box<Self> {
@@ -113,26 +114,26 @@ impl Png {
     }
 }
 impl Png {
-    pub(crate)  fn load(mut self: Box<Self>) -> Result<Box<Self>, PurgeErr> {
+    pub(crate)  fn load(&mut self) -> Result<(), PurgeErr> {
 
         let mut file = fs::File::open(self.paths.old())?;
         file.read_to_end(&mut self.data)?;
 
-        Ok(self)
+        Ok(())
 
         }
 
 
 
-    pub(crate) fn process(mut self: Box<Self>) -> Result<Box<Self>, PurgeErr> {
+    pub(crate) fn process(&mut self) -> Result<(), PurgeErr> {
 
         let ancil_ranges = get_ancil_ranges(&self.data)?;
         self.data = dont_take_ranges(&self.data, ancil_ranges);
 
-        Ok(self)
+        Ok(())
     }
 
-    pub(crate) fn save(mut self: Box<Self>) -> Result<(), PurgeErr> {
+    pub(crate) fn save(&mut self) -> Result<(), PurgeErr> {
 
         let mut temp = File::create(self.paths.temp())?;
         temp.write_all(self.data.as_slice())?;
@@ -144,13 +145,13 @@ impl Png {
 
         if let Err(hr) = std::fs::rename(&self.paths.temp(), &self.paths.old()) {
             std::fs::remove_file(&self.paths.temp());
-            //     return Err(PurgeErr::from(hr))
+            return Err(PurgeErr::from(hr))
         }
         // We still have to remove the temp it remove() fails
         Ok(())
     }
 
-    pub(crate)  fn file_name(&self) -> String {
+    pub(crate)  fn inner_file_name(&self) -> String {
         self.paths.old_owned()
     }
 }
