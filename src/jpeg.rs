@@ -2,7 +2,7 @@ use std::fs;
 use std::fs::File;
 use std::io::{Read, Write};
 use crate::errors::error::PurgeErr;
-use crate::traits::container::{DataPaths, Purgable};
+use crate::traits::container::{DataPaths, Heaped};
 
 #[derive(Debug, Copy, Clone)]
 struct Range {
@@ -193,33 +193,37 @@ pub(crate) struct Jpg {
     data: Vec<u8>
 }
 
-impl Jpg {
-    pub(crate) fn new(paths: DataPaths) -> Box<Jpg> {
+
+
+impl Heaped for Jpg {
+    fn new(paths: DataPaths) -> Box<Jpg> {
         Box::from(Jpg {
             paths: paths,
             data: Vec::new()
         })
     }
-}
 
-impl Jpg {
-    pub(crate) fn load(mut self: Box<Self>) -> Result<Box<Self>, PurgeErr> {
+    fn inner_file_name(&self) -> String {
+        self.paths.old_owned()
+    }
+
+    fn load(&mut self) -> Result<(), PurgeErr> {
         let mut file = fs::File::open(self.paths.old())?;
     file.read_to_end(&mut self.data)?;
 
-        Ok(self)
+        Ok(())
 
 
     }
 
-    pub(crate)  fn process(mut self: Box<Self>) -> Result<Box<Self>, PurgeErr> {
+    fn process(&mut self) -> Result<(), PurgeErr> {
         let ranges = get_app_ranges(&self.data);
         self.data = dont_take_ranges(&self.data, ranges);
 
-        Ok(self)
+        Ok(())
     }
 
-    pub(crate)  fn save(self) -> Result<(), PurgeErr> {
+    fn save(&mut self) -> Result<(), PurgeErr> {
         let mut temp = File::create(self.paths.temp())?;
         temp.write_all(self.data.as_slice())?;
         // if let Err(hr) = std::fs::remove_file(&self.paths.old()) {
@@ -234,9 +238,5 @@ impl Jpg {
         }
         // We still have to remove the temp it remove() fails
         Ok(())
-    }
-
-    pub(crate) fn file_name(&self) -> String {
-        self.paths.old_owned()
     }
 }

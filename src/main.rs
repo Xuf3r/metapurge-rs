@@ -4,7 +4,7 @@ mod pdf;
 mod mso_x;
 mod traits;
 mod errors;
-mod dyn_png;
+mod png;
 mod jpeg;
 
 
@@ -25,7 +25,7 @@ use regex::Regex;
 use lazy_static::lazy_static;
 use crate::errors::error::{PurgeErr, ToUser, UISideErr};
 
-use crate::traits::container::{DataPaths, DocumentType, Purgable};
+use crate::traits::container::{DataPaths, Heaped, Purgable};
 use native_dialog::{MessageDialog,};
 
 fn echo(name: &str) {
@@ -58,12 +58,12 @@ const TARGET: &[u8] = br#"<Relationship Id="rId4" Type="http://schemas.openxmlfo
 const REPLACEMENT: &[u8; 16] = br#"</Relationships>"#;
 
 enum OutMessage {
-    Data(DocumentType),
+    Data(Box<dyn Purgable>),
     ComputeEnd
 }
 
 enum InMessage {
-    Data(DocumentType),
+    Data(Box<dyn Purgable>),
     ComputeEnd,
 }
 
@@ -90,13 +90,13 @@ fn remove_rells(mut data: Vec<u8>, index: usize) -> Vec<u8> {
 }
 
 
-fn iterate_over_stubs(docs: Vec<DocumentType>,
-                         itx: Sender<InMessage>,
-                         irx: Arc<Mutex<Receiver<InMessage>>>,
-                         otx: Sender<OutMessage>,
-                         orx: Receiver<OutMessage>,
-                         lock: &Mutex<bool>,
-                         cvar: &Condvar) -> Vec<UISideErr> {
+fn iterate_over_stubs(docs: Vec<Box<dyn Purgable>>,
+                      itx: Sender<InMessage>,
+                      irx: Arc<Mutex<Receiver<InMessage>>>,
+                      otx: Sender<OutMessage>,
+                      orx: Receiver<OutMessage>,
+                      lock: &Mutex<bool>,
+                      cvar: &Condvar) -> Vec<UISideErr> {
     let mut err_vec:Vec<UISideErr> = vec![];
     let mut started = lock.lock().unwrap();
 
@@ -234,7 +234,7 @@ fn main() -> () {
 
     let paths: Vec<DirEntry> = oks.into_iter().map(Result::unwrap).collect();
 
-    let dirty_stubs: Vec<DocumentType> = paths.into_iter()
+    let dirty_stubs: Vec<Box<dyn Purgable>> = paths.into_iter()
         .filter(|path| DataPaths::is_supported(path))
         .map(DataPaths::new)
         .map(DataPaths::instantiate)

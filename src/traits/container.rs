@@ -4,7 +4,7 @@ use crate::errors::error::PurgeErr;
 
 use crate::pdf::{Pdf};
 
-use crate::dyn_png::Png;
+use crate::png::Png;
 use crate::jpeg::Jpg;
 use crate::mso_x::mso_x::MsOX;
 
@@ -20,48 +20,53 @@ const JPEG: &str = "jpeg";
 const JPG: &str = "jpg";
 const PNG: &str = "png";
 
-#[derive()]
-pub(crate) enum DocumentType {
-    Pdf(Box<Pdf>),
-    Png(Box<Png>),
-    Jpg(Box<Jpg>),
-    MsOX(Box<MsOX>),
-}
-macro_rules! impl_document_type {
-    ($($variant:ident),*) => {
-        impl DocumentType {
-            pub(crate) fn load(self) -> Result<Self, PurgeErr> {
-                match self {
-                    $(Self::$variant(inner) => inner.load().map(Self::$variant),)*
-                }
-            }
+pub(crate) trait Heaped {
+    fn new(paths: DataPaths) -> Box<Self>;
+    fn inner_file_name(&self) -> String;
 
-            pub(crate) fn process(self) -> Result<Self, PurgeErr> {
-                match self {
-                    $(Self::$variant(inner) => inner.process().map(Self::$variant),)*
-                }
-            }
-
-           pub(crate)  fn save(self) -> Result<(), PurgeErr> {
-                match self {
-                    $(Self::$variant(inner) => {
-                        inner.save()
-                    },)*
-                }
-            }
-
-           pub(crate)  fn file_name(&self) -> String {
-                match self {
-                    $(Self::$variant(ref inner) => inner.file_name(),)*
-                }
-            }
-        }
-    };
+    fn load(&mut self) -> Result<(), PurgeErr>;
+    fn process(&mut self) -> Result<(), PurgeErr>;
+    fn save(&mut self) -> Result<(), PurgeErr>;
 }
 
-impl_document_type!(Pdf, Png, Jpg, MsOX);
 
-#[derive()]
+pub(crate) struct DataBox<T: Heaped + Sized> {
+    data: Box<T>
+}
+
+
+impl<T: Heaped + Sized> DataBox<T> {
+    pub(crate) fn file_name(&self) -> String {
+        self.data.inner_file_name()
+    }
+    fn new(paths: DataPaths) -> Box<DataBox<T>> {
+        Box::new(DataBox {
+            data: T::new(paths)
+        })
+    }
+}
+
+impl<T: Heaped + Sized + Send + 'static> Purgable for DataBox<T> {
+    fn load(mut self: Box<Self>) -> Result<Box<dyn Purgable>, PurgeErr> {
+        self.data.load();
+        Ok(self as Box<dyn Purgable>)
+    }
+
+    fn process(mut self: Box<Self>) -> Result<Box<dyn Purgable>, PurgeErr> {
+        self.data.process();
+        Ok(self as Box<dyn Purgable>)
+    }
+
+    fn save(mut self: Box<Self>) -> Result<(), PurgeErr> {
+        self.data.save()?;
+        Ok(())
+    }
+
+    fn file_name(&self) -> String {
+        self.file_name()
+    }
+}
+#[derive(Clone)]
 pub(crate) struct DataPaths {
     old_path: String,
     temp_path: String
@@ -88,12 +93,12 @@ impl DataPaths {
     _ => false,
         }
     }
-    pub(crate) fn instantiate(self) -> DocumentType {
+    pub(crate) fn instantiate(self) -> Box<dyn Purgable> {
         match self.old_path.split(".").last().unwrap() {
-            PDF => DocumentType::Pdf(Pdf::new(self)),
-            DOCX | XLSX => DocumentType::MsOX(MsOX::new(self)),
-            PNG => DocumentType::Png(Png::new(self)),
-            JPEG | JPG => DocumentType::Jpg(Jpg::new(self)),
+            PNG => DataBox::<Png>::new(self),
+            DOCX | XLSX => DataBox::<MsOX>::new(self),
+            PDF => DataBox::<Pdf>::new(self),
+            JPEG | JPG => DataBox::<Jpg>::new(self),
             sum @ _  => panic!("Unsupported file type {sum}"),
         }
     }
@@ -121,10 +126,11 @@ impl DataPaths {
 }
 
 
-pub(crate) trait Purgable {
-    fn load(self: Box<Self>) -> Result<Box<Self>, PurgeErr>;
-    fn process(self: Box<Self>) -> Result<Box<Self>, PurgeErr>;
+pub(crate) trait Purgable: Send {
+    fn load(self: Box<Self>) -> Result<Box<dyn Purgable>, PurgeErr>;
+    fn process(self: Box<Self>) -> Result<Box<dyn Purgable>, PurgeErr>;
     fn save(self: Box<Self>) -> Result<(), PurgeErr>;
+
     fn file_name(&self) -> String;
 }
 
