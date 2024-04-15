@@ -1,9 +1,8 @@
-use std::ffi::OsString;
 use std::fs;
 use std::fs::File;
 use std::io::{Read, Write};
 use crate::errors::error::{ExifStructureErr, PurgeErr};
-use crate::traits::container::{DataPaths, Purgable};
+use crate::traits::container::{DataPaths, Heaped};
 
 
 #[derive(Debug, Copy, Clone)]
@@ -105,16 +104,21 @@ pub(crate) struct Png {
 }
 
 
-impl Png {
-    pub(crate) fn new(paths: DataPaths) -> Box<Self> {
+
+impl Heaped for Png {
+    fn new(paths: DataPaths) -> Box<Self> {
         Box::from(Png {
             paths: paths,
             data: Vec::new()
         })
     }
-}
-impl Png {
-    pub(crate)  fn load(&mut self) -> Result<(), PurgeErr> {
+    fn inner_file_name(&self) -> String {
+        self.paths.old_owned()
+    }
+
+
+
+    fn load(&mut self) -> Result<(), PurgeErr> {
 
         let mut file = fs::File::open(self.paths.old())?;
         file.read_to_end(&mut self.data)?;
@@ -123,9 +127,7 @@ impl Png {
 
         }
 
-
-
-    pub(crate) fn process(&mut self) -> Result<(), PurgeErr> {
+    fn process(&mut self) -> Result<(), PurgeErr> {
 
         let ancil_ranges = get_ancil_ranges(&self.data)?;
         self.data = dont_take_ranges(&self.data, ancil_ranges);
@@ -133,7 +135,7 @@ impl Png {
         Ok(())
     }
 
-    pub(crate) fn save(&mut self) -> Result<(), PurgeErr> {
+    fn save(&mut self) -> Result<(), PurgeErr> {
 
         let mut temp = File::create(self.paths.temp())?;
         temp.write_all(self.data.as_slice())?;
@@ -149,9 +151,5 @@ impl Png {
         }
         // We still have to remove the temp it remove() fails
         Ok(())
-    }
-
-    pub(crate)  fn inner_file_name(&self) -> String {
-        self.paths.old_owned()
     }
 }

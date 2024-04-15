@@ -4,7 +4,7 @@ use crate::errors::error::PurgeErr;
 
 use crate::pdf::{Pdf};
 
-use crate::dyn_png::Png;
+use crate::png::Png;
 use crate::jpeg::Jpg;
 use crate::mso_x::mso_x::MsOX;
 
@@ -21,34 +21,32 @@ const JPG: &str = "jpg";
 const PNG: &str = "png";
 
 pub(crate) trait Heaped {
+    fn new(paths: DataPaths) -> Box<Self>;
     fn inner_file_name(&self) -> String;
+
+    fn load(&mut self) -> Result<(), PurgeErr>;
+    fn process(&mut self) -> Result<(), PurgeErr>;
+    fn save(&mut self) -> Result<(), PurgeErr>;
 }
 
-impl Heaped for Png {
-    fn inner_file_name(&self) -> String {
-        self.paths.old_owned()
-    }
-}
 
 pub(crate) struct DataBox<T: Heaped + Sized> {
     data: Box<T>
 }
 
-impl DataBox<Png> {
-    fn new(obj: Box<Png>, paths: DataPaths) -> Box<DataBox<Png>>{
-        Box::new(DataBox {
-            data: Png::new(paths)
-        })
-    }
-}
 
 impl<T: Heaped + Sized> DataBox<T> {
     pub(crate) fn file_name(&self) -> String {
         self.data.inner_file_name()
     }
+    fn new(paths: DataPaths) -> Box<DataBox<T>> {
+        Box::new(DataBox {
+            data: T::new(paths)
+        })
+    }
 }
 
-impl Purgable for DataBox<Png> {
+impl<T: Heaped + Sized + Send + 'static> Purgable for DataBox<T> {
     fn load(mut self: Box<Self>) -> Result<Box<dyn Purgable>, PurgeErr> {
         self.data.load();
         Ok(self as Box<dyn Purgable>)
@@ -91,17 +89,16 @@ impl DataPaths {
             None => return false
         };
     match extension {
-    // PDF | DOCX | XLSX | PNG | JPEG | JPG => true,
-        PNG => true,
+    PDF | DOCX | XLSX | PNG | JPEG | JPG => true,
     _ => false,
         }
     }
     pub(crate) fn instantiate(self) -> Box<dyn Purgable> {
         match self.old_path.split(".").last().unwrap() {
-            PNG => DataBox::new(Png::new(self.clone()), self),
-            // DOCX | XLSX => DataBox::new(MsOX::new(self)),
-            // PDF => DataBox::new(Png::new(self)),
-            // JPEG | JPG => DataBox::new(Jpg::new(self)),
+            PNG => DataBox::<Png>::new(self),
+            DOCX | XLSX => DataBox::<MsOX>::new(self),
+            PDF => DataBox::<Pdf>::new(self),
+            JPEG | JPG => DataBox::<Jpg>::new(self),
             sum @ _  => panic!("Unsupported file type {sum}"),
         }
     }

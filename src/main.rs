@@ -4,7 +4,7 @@ mod pdf;
 mod mso_x;
 mod traits;
 mod errors;
-mod dyn_png;
+mod png;
 mod jpeg;
 
 
@@ -25,7 +25,7 @@ use regex::Regex;
 use lazy_static::lazy_static;
 use crate::errors::error::{PurgeErr, ToUser, UISideErr};
 
-use crate::traits::container::{DataBox, DataPaths, Heaped, Purgable};
+use crate::traits::container::{DataPaths, Heaped, Purgable};
 use native_dialog::{MessageDialog,};
 
 fn echo(name: &str) {

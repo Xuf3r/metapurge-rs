@@ -1,13 +1,11 @@
 #![deny(clippy::unwrap_used)]
-use std::ffi::OsString;
 
-use std::collections::{HashSet};
 use std::fmt::{Debug, Pointer};
 
-use lopdf::{Document, Object, ObjectId,};
+use lopdf::{Document, ObjectId, Stream};
 
-use std::str::{from_utf8, FromStr};
-use xmp_toolkit::{ToStringOptions, XmpError, XmpMeta, XmpValue};
+use std::str::{from_utf8};
+use xmp_toolkit::{XmpMeta, XmpProperty};
 use crate::errors::error::PurgeErr;
 
 use crate::traits::container::{DataPaths, Heaped, Purgable};
@@ -19,16 +17,50 @@ const ELEMENTS_TO_CLEAN: [(&str, &str); 4] = [
     ("http://ns.adobe.com/xap/1.0/mm/", "xmp:CreatorTool"),
 ];
 
-const PDF_METADATA_KEYS: [&str; 8] = [
-"Title", "Author", "Subject", "Keywords", "Creator", "Producer", "CreationDate", "ModDate"
+const PDF_METADATA_KEYS: [&str; 11] = [
+"Title", "Author", "Subject", "Keywords", "Creator", "Producer", "CreationDate", "ModDate", "Comments", "Company", "SourceModified"
 ];
 
+const XMP_META_STREAM_KEYS: [&str; 2] = ["Subtype", "Type"];
+const XMP_META_STREAM_SUBKEYS: [&str; 2] = ["XML", "Metadata"];
+fn is_xmp_meta_stream(strm: &Stream ) -> Option<bool> {
+
+    Option::from(
+        XMP_META_STREAM_KEYS.iter()
+        .filter_map(    |key|
+            strm.dict.get(key.as_bytes()).ok()?
+            .as_name_str().ok()
+        )
+        .collect::<Vec<&str>>()
+        .eq(&XMP_META_STREAM_SUBKEYS)
+    )
+
+}
 fn clean_xmp(mut xmp: XmpMeta) -> Result<XmpMeta, PurgeErr>{
-    for (ns, name) in ELEMENTS_TO_CLEAN {
-        if let Some(_) = xmp.property(ns,name) {
-            xmp.set_property(ns, name, &XmpValue::new("".to_owned()))?
+    // for (ns, name) in ELEMENTS_TO_CLEAN {
+    //     if let Some(_) = xmp.property(ns,name) {
+    //         xmp.set_property(ns, name, &XmpValue::new("".to_owned()))?
+    //     }
+    // }
+    let mut properties: Vec<XmpProperty> = Vec::new();
+    for property in xmp.iter(Default::default()){
+        if &property.name != "" {
+            println!("For property '{}' schema is {}.", &property.name, &property.schema_ns);
+            properties.push(property.clone())
         }
-    }
+    };
+
+    for prop in properties.iter() {
+        xmp.delete_property(&prop.schema_ns, &prop.name).unwrap()
+    };
+
+    println!("_________________________\n\n");
+    for property in xmp.iter(Default::default()){
+        if &property.name != "" {
+            println!("For property '{}' schema is {}.", &property.name, &property.schema_ns);
+            properties.push(property.clone())
+        }
+    };
     Ok(xmp)
 }
 
@@ -46,7 +78,7 @@ pub(crate) struct Pdf {
     paths: DataPaths,
     data: state_Doc
 }
-impl Heaped for Pdf{
+impl Pdf {
     fn inner_file_name(&self) -> String {
         self.paths.old_owned()
     }
@@ -61,15 +93,26 @@ impl Pdf {
     }
 }
 
-impl Pdf {
+impl Heaped for Pdf {
 
-    pub(crate)  fn load(mut self: Box<Self>) -> Result<Box<Self>, PurgeErr> {
-        self.data = state_Doc::Data(Document::load(&self.paths.old())?);
-
-        Ok(self)
+    fn new(paths: DataPaths) -> Box<Self> {
+        Box::from(Pdf {
+            paths: paths,
+            data: state_Doc::Stub
+        })
     }
 
-    pub(crate) fn process(mut self: Box<Self>) -> Result<Box<Self>, PurgeErr> {
+    fn inner_file_name(&self) -> String {
+        self.paths.old_owned()
+    }
+
+    fn load(&mut self) -> Result<(), PurgeErr> {
+        self.data = state_Doc::Data(Document::load(&self.paths.old())?);
+
+        Ok(())
+    }
+
+    fn process(&mut self) -> Result<(), PurgeErr>  {
 
         let mut dirty_objs:Vec<dirty_Objs> = Vec::new();
 
@@ -81,6 +124,9 @@ impl Pdf {
 
         for (object_id, object) in doc.objects.iter() {
             if let Ok(dict) = object.as_dict() {
+                if dict.len() == 0 {
+                    continue
+                }
                 let dirty_keys: Vec<Vec<u8>> = dict
                     .iter()
                     .filter_map(|(key, value)|
@@ -99,14 +145,25 @@ impl Pdf {
                     .collect();
                 if dirty_keys.len() == dict.len() {
                     dirty_objs.push(dirty_Objs::Empty(object_id.clone()))
-                } else {
+                } else if dirty_keys.len() != 0 {
                     dirty_objs.push(dirty_Objs::Dict(object_id.clone(), dirty_keys))
                 }
-            } else if let Ok(strm) = object.as_stream() {
-                if strm.dict.has("Subtype".as_bytes()) & strm.dict.has("Type".as_bytes()) {
-                    dirty_objs.push(dirty_Objs::Stream(object_id.clone()))
-                }
             }
+            else if object
+                .as_stream().ok()
+                .and_then(|strm| is_xmp_meta_stream(strm))
+                .unwrap_or(false) {
+                dirty_objs.push(dirty_Objs::Stream(object_id.clone()));
+            }
+            // else if let Ok(Ok(strm)) = object.as_stream() {
+            //     if strm.dict.has("Subtype".as_bytes()) & strm.dict.has("Type".as_bytes()) {
+            //         if (strm.dict.get("Subtype".as_bytes()).unwrap().as_name_str().unwrap() == "XML")
+            //             &&  (strm.dict.get("Type".as_bytes()).unwrap().as_name_str().unwrap() == "Metadata") {
+            //
+            //         dirty_objs.push(dirty_Objs::Stream(object_id.clone()))
+            //             }
+            //     }
+            // }
         }
 
         for obj in dirty_objs {
@@ -122,34 +179,40 @@ impl Pdf {
                 },
 
                 dirty_Objs::Stream(id) => {
-                    if let Ok(mut strm) = doc.get_object_mut(id.clone()).unwrap().as_stream_mut() {
-                        let byte_slice: &[u8] = &strm.content;
-                        let string_slice: &str = unsafe {
+                    doc.objects.remove(&id);
 
-                            std::str::from_utf8_unchecked(byte_slice)
-                        };
-                        let mut loaded = xmp_toolkit::XmpMeta::from_str(string_slice)?;
-                        match clean_xmp(loaded) {
-                            Ok(cleaned)=> {
-                                let cleaned_xmp = cleaned.to_string_with_options(ToStringOptions::default())?;
-                            strm.set_content(cleaned_xmp.as_bytes().to_vec());
-                            },
-                            Err(err) => {
-                                return Err(PurgeErr::from(err))
-                            }
-                        }
-                    }
+                    // Potentially we can instead overwrite the metadata with empty values, so it looks less conscious.
+                    // Probably has to be made into a CMD argument feature.
+
+                    // if let Ok(mut strm) = doc.get_object_mut(id.clone()).unwrap().as_stream_mut() {
+                    //     let byte_slice: &[u8] = &strm.content;
+                    //     let string_slice: &str = unsafe {
+                    //
+                    //         std::str::from_utf8_unchecked(byte_slice)
+                    //     };
+                    //     let mut loaded = xmp_toolkit::XmpMeta::from_str(string_slice)?;
+                    //     match clean_xmp(loaded) {
+                    //         Ok(cleaned)=> {
+                    //         let cleaned_xmp = cleaned.to_string_with_options(ToStringOptions::default())?;
+                    //         strm.set_content(cleaned_xmp.as_bytes().to_vec());
+                    //         },
+                    //         Err(err) => {
+                    //             panic!("pdf error!!");
+                    //             return Err(PurgeErr::from(err))
+                    //         }
+                    //     }
+                    // }
                 }
             }
         }
 
-        Ok(self)
+        Ok(())
     }
 
-    pub(crate)  fn save(mut self: Box<Self>) -> Result<(), PurgeErr> {
-        let mut data = match self.data {
+    fn save(&mut self) -> Result<(), PurgeErr> {
+        let  mut data = match &mut self.data {
             state_Doc::Stub => {unreachable!("Not possible.")}
-            state_Doc::Data(data) => {data}
+            state_Doc::Data(ref mut data) => {data}
         };
         data.save(self.paths.old())?;
         // if let Err(hr) = std::fs::remove_file(&self.paths.old()) {
@@ -163,7 +226,4 @@ impl Pdf {
         Ok(())
     }
 
-    pub(crate)  fn file_name(&self) -> String {
-        self.paths.old_owned()
-    }
 }

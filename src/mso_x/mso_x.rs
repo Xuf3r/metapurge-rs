@@ -1,5 +1,4 @@
 #![deny(clippy::unwrap_used)]
-use std::ffi::OsString;
 use std::fs::File;
 use std::{fs, io};
 use std::io::{Read, Write};
@@ -13,7 +12,7 @@ use crate::mso_x::mso_x_file_name_consts;
 
 
 use lazy_static::lazy_static;
-use crate::traits::container::{DataPaths, Purgable};
+use crate::traits::container::{DataPaths, Heaped};
 
 
 lazy_static! {
@@ -30,28 +29,32 @@ pub(crate) struct MsOX {
     data: rw_MsOX
 }
 
-impl MsOX {
-    pub(crate) fn new(paths: DataPaths) -> Box<Self> {
-        Box::from(MsOX {
-            paths: paths,
-            data: rw_MsOX::Stub
-        })
-    }
-}
 
-impl MsOX {
-    pub(crate) fn load(mut self: Box<Self>) -> Result<Box<Self>, PurgeErr> {
+impl Heaped for  MsOX {
+    fn new(paths: DataPaths) -> Box<Self> {
+        Box::new(
+            MsOX {
+                paths,
+                data: rw_MsOX::Stub,
+            }
+        )
+    }
+
+    fn inner_file_name(&self) -> String {
+        self.paths.old_owned()
+    }
+    fn load(&mut self) -> Result<(), PurgeErr> {
         let file = File::open(self.paths.old())?;
         self.data = rw_MsOX::Archive(ZipArchive::new(file)?);
 
-        Ok(self)
+        Ok(())
     }
 
-    pub(crate)  fn process(mut self: Box<Self>) -> Result<Box<Self>, PurgeErr> {
+    fn process(&mut self) -> Result<(), PurgeErr> {
         let file = File::create(self.paths.temp())?;
         let mut zipout = ZipWriter::new(file);
 
-        let mut archive = match self.data {
+        let mut archive = match &mut self.data {
             rw_MsOX::Stub => {unreachable!("It can't happen.")},
             rw_MsOX::Archive(archive) => {archive}
             rw_MsOX::Writer(_) => {unreachable!("It can't happen.")}
@@ -100,25 +103,21 @@ impl MsOX {
         };
 
         self.data = rw_MsOX::Writer(zipout);
-        Ok(self)
+        Ok(())
     }
 
-    pub(crate)  fn save(self: Box<Self>) -> Result<(), PurgeErr> {
-        let mut archive = match self.data {
+    fn save(&mut self) -> Result<(), PurgeErr>{
+        let mut archive = match &mut self.data {
             rw_MsOX::Stub => {unreachable!("Can't happen.")},
             rw_MsOX::Archive(_) => {unreachable!("Can't happen.")},
             rw_MsOX::Writer(archive) => {archive}
         };
         archive.finish()?;
-        if let Err(e) = fs::rename(&self.paths.temp(), &self.paths.old()) {
+        if let Err(_) = fs::rename(&self.paths.temp(), &self.paths.old()) {
             fs::remove_file(&self.paths.old())?;
         }
 
         Ok(())
 
-    }
-
-    pub(crate)  fn file_name(&self) -> String {
-        self.paths.old_owned()
     }
 }
